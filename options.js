@@ -494,9 +494,12 @@ async function addDomain(d) {
   _domainBusy = true;
   try {
     d = String(d || '').trim().toLowerCase();
-    if (!d || !d.includes('.')) return;
-    if (domains.includes(d)) {
+    if (!d || !d.includes('.')) { _domainBusy = false; return; }
+    // ME-6: 使用 Set 进行去重检查，避免 TOCTOU 竞态
+    var domainSet = new Set(domains);
+    if (domainSet.has(d)) {
       showStatus('⚠️ 域名已存在', true);
+      _domainBusy = false;
       return;
     }
     domains.push(d);
