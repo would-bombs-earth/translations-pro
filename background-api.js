@@ -186,9 +186,12 @@ function extractMicrosoftText(data) {
 
 let _msToken = null;
 let _msTokenExpiry = 0;
+let _msTokenPromise = null; // HI-1: Promise 锁防止并发 token 请求
 
 async function getMicrosoftToken() {
     if (_msToken && Date.now() < _msTokenExpiry) return _msToken;
+    if (_msTokenPromise) return _msTokenPromise; // 复用进行中的请求
+    _msTokenPromise = (async () => {
     const res = await fetchWithAbort('https://edge.microsoft.com/translate/auth', {}, 5000);
     if (!res.ok) throw new Error('MS token HTTP ' + res.status);
     _msToken = await res.text();
@@ -199,6 +202,8 @@ async function getMicrosoftToken() {
         _msTokenExpiry = Date.now() + 300000;
     }
     return _msToken;
+    })();
+    return _msTokenPromise.finally(() => { _msTokenPromise = null; });
 }
 
 async function translateViaMicrosoft(text, sl, retry) {
@@ -237,6 +242,16 @@ async function translateViaMicrosoft(text, sl, retry) {
 // ═══════════════════════════════════════════════════════════
 
 async function fetchWithAbort(url, opts = {}, timeoutMs = 10000) {
+    // LO-2: 使用 AbortSignal.timeout 替代手动 setTimeout，避免已完成请求的冗余 abort
+    if (typeof AbortSignal.timeout === 'function') {
+        const existingSignal = opts.signal;
+        const timeoutSignal = AbortSignal.timeout(timeoutMs);
+        const combinedSignal = existingSignal
+            ? AbortSignal.any([existingSignal, timeoutSignal])
+            : timeoutSignal;
+        return await fetch(url, { ...opts, signal: combinedSignal });
+    }
+    // Fallback for older environments
     const ctrl = new AbortController();
     const id = setTimeout(() => ctrl.abort(new DOMException('timeout', 'TimeoutError')), timeoutMs);
     try {
@@ -287,7 +302,29 @@ async function translateViaEngine(text, sl, domain, engine) {
 // 主翻译入口 (export) — 单引擎模式，用户自行选择
 // ═══════════════════════════════════════════════════════════
 
+// CR-1: keepAlive port 集合，防止 SW 在翻译中途被终止
+const _keepAlivePorts = new Map();
+
+function _acquireKeepAlive() {
+    const port = chrome.runtime.connect({ name: 'keepAlive' });
+    const id = Date.now() + '-' + Math.random().toString(36).slice(2);
+    _keepAlivePorts.set(id, port);
+    return { port, id };
+}
+
+function _releaseKeepAlive(id) {
+    const port = _keepAlivePorts.get(id);
+    if (port) {
+        _keepAlivePorts.delete(id);
+        port.disconnect();
+    }
+}
+
 export async function google(text, sl = 'auto', domain = '', tabId = null, groupId = null) {
+    // CR-1: 获取 keepAlive port 防止 SW 被终止
+    const ka = typeof chrome !== 'undefined' && chrome.runtime?.connect
+        ? _acquireKeepAlive() : null;
+    try {
     const clean = sanitizeText(text);
     const cacheKey = domain ? domain + '::' + clean : clean;
 
@@ -310,7 +347,7 @@ export async function google(text, sl = 'auto', domain = '', tabId = null, group
     }
 
     // 单引擎翻译（含大文本分块）
-    let result;
+    let result = null; // HI-3: 显式初始化为 null
     try {
         result = await translateWithChunking(clean, sl, domain, engine);
     } catch (e) {
@@ -325,6 +362,7 @@ export async function google(text, sl = 'auto', domain = '', tabId = null, group
             engine = fallback;
         } catch (e2) {
             ERR('降级也失败:', e2?.message || String(e2));
+            result = null; // HI-3: 确保失败后 result 为 null
         }
     }
 
@@ -334,6 +372,10 @@ export async function google(text, sl = 'auto', domain = '', tabId = null, group
 
     cacheSet(cacheKey, result.translation);
     return { translation: result.translation, engine: engine };
+    } finally {
+        // CR-1: 释放 keepAlive，但延迟 200ms 确保 sendResponse 先发送
+        if (ka) setTimeout(() => _releaseKeepAlive(ka.id), 200);
+    }
 }
 
 // ── 单引擎翻译 + 大文本自动分块 ──
@@ -349,7 +391,8 @@ async function translateWithChunking(text, sl, domain, engine) {
                 .catch(e => { ERR(engine + ' chunk:', e?.message || String(e)); return null; })
         )
     );
-    const valid = results.filter(Boolean).map(r => r.translation).filter(Boolean);
+    // HI-3: 使用 .filter(r => r && r.translation) 避免空字符串被滤掉
+    const valid = results.filter(r => r && r.translation != null).map(r => r.translation);
     if (!valid.length) throw new Error('all chunks failed');
     return { translation: valid.join('\n'), engine: engine };
 }

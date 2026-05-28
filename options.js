@@ -472,7 +472,9 @@ function renderDomains(filter) {
   for (let i = 0; i < list.length; i++) {
     const d = list[i];
     const escapedD = escapeHtml(d);
-    const display = filter ? escapedD.replace(new RegExp('(' + filter.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi'), '<mark>$1</mark>') : escapedD;
+    // LO-4: 预计算安全正则模式
+    var safePattern = filter ? filter.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '';
+    const display = filter ? escapedD.replace(new RegExp('(' + safePattern + ')', 'gi'), '<mark>$1</mark>') : escapedD;
     html += '<tr><td>' + (i + 1) + '</td><td>' + display + '</td><td><span class="del" data-domain="' + escapedD + '">✕</span></td></tr>';
   }
   html += '</table>';
