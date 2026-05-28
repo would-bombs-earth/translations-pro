@@ -343,7 +343,7 @@ translations_pro/
   "host_permissions": ["<all_urls>"],
   "content_security_policy": {
     "extension_pages": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src *"
-  }
+  } 
 }
 ```
   
