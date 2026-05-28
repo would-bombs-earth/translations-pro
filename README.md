@@ -2,7 +2,7 @@
 
 ⚡ 极速网页翻译扩展，支持 15+ 语种自动翻译为简体中文。双引擎架构（Microsoft + 自部署 Worker 代理），非侵入式 DOM 替换。
 
-## ✨ 特性
+## ✨ 特性 
 
 - 🚀 极速翻译 — 32 并发 + 批量 Marker 协议（64条/批）
 - 🔌 双引擎 — Microsoft Translator（默认）+ 自部署 Cloudflare Worker 代理
