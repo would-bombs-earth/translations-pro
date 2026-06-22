@@ -147,15 +147,6 @@ function processTextNode(node) {
 
   if (isAlreadyChinese(text)) { diag.alreadyChinese++; return; }
 
-  // Fast cache hit: if already translated and this is a React-rebuilt node
-  var fastCache = cacheGet(text);
-  if (fastCache !== undefined && fastCache !== text && !origTextMap.has(node)) {
-    if (node.__gt_orig === undefined) node.__gt_orig = raw;
-    origTextMap.set(node, { raw: text, translated: fastCache });
-    mute(() => applyTranslation(node, text, fastCache));
-    return;
-  }
-
   // Node was previously translated but content has changed externally
   // (e.g. "show more" expanded the textContent of the same node).
   // Re-process it; applyTranslation will update origTextMap with the new raw.
