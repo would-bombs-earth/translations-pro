@@ -865,7 +865,7 @@ function _coll(root, textOut, elOut) {
       elOut.push(n);
     }
   }
-  for (const sr of shadowRootsIn(root)) collectBoth(sr, textOut, elOut);
+  for (const sr of shadowRootsIn(root)) _coll(sr, textOut, elOut);
 }
 
 chrome.runtime.onMessage.addListener((msg, _s, send) => {
