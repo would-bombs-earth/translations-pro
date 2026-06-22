@@ -139,6 +139,8 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
       await setTabState(tab.id, newState);
     }
   } catch (e) {
+    // "Receiving end does not exist" = content script not injected (chrome:// etc), expected
+    if ((e?.message || String(e)).includes('Receiving end does not exist')) return;
     ERR('context menu toggle error:', e?.message || String(e));
   }
 
