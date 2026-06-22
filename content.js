@@ -3,7 +3,7 @@
 
 // manual flush promise (Fix 1+6: real count from translatePage)
 
-var _flR = [], _flushGen = 0, _iF = {}, _iA = 0;
+var _flR = [], _flushGen = 0, _iF = {}, _iA = 0, _skipInc = false;
 
 // node processing
 
@@ -177,12 +177,12 @@ function processTextNode(node) {
   seenAdd(text);
   queue.add(node);
   diag.queued++;
-  dispatchIncremental();
+  if (!_skipInc) dispatchIncremental();
   _dbg('detect', { text });
 }
 
 function dispatchIncremental() {
-  if (tMode === 'off' || !isAlive()) return;
+  if (tMode === 'off' || !isAlive() || translating) return;
   if (queue.size < INCREMENTAL_THRESHOLD) return;
 
   var nodes = [], iter = queue.values(), count = 0, next;
@@ -219,6 +219,7 @@ function scanInitial(skipHydration) {
 
   const doScan = function () {
     if (tMode === 'off') return;
+    _skipInc = true;
     var titleEl = document.querySelector('title');
     if (titleEl && titleEl.firstChild && titleEl.firstChild.nodeType === Node.TEXT_NODE) processTextNode(titleEl.firstChild);
     enqueueNode(document.body);
@@ -226,6 +227,7 @@ function scanInitial(skipHydration) {
     var els = querySelectorAllDeep(document.body, attrSelector);
     els.forEach(el => processElementAttrs(el));
     scheduleFlush();
+    _skipInc = false;
   };
 
   if (tMode === 'manual') {
