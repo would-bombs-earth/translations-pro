@@ -8,13 +8,13 @@ const actionLabel = $('actionLabel');
 const statusEl = $('status');
 const stateIcon = $('stateIcon');
 const stateText = $('stateText');
+const cardGG = $('cardGG');
 const cardMS = $('cardMS');
-const cardWK = $('cardWK');
 const latencyMS = $('latencyMS');
-const latencyWK = $('latencyWK');
+const latencyGG = $('latencyGG');
 const netError = $('netError');
 
-let selectedEngine = 'worker-proxy'; // 默认 Worker 代理
+let selectedEngine = 'google';
 
 let currentTabId = null;
 let isTranslated = false;
@@ -33,7 +33,7 @@ function latencyClass(ms) {
 
 function renderEngineSelection() {
   cardMS.classList.toggle('selected', selectedEngine === 'microsoft');
-  cardWK.classList.toggle('selected', selectedEngine === 'worker-proxy');
+  cardGG.classList.toggle('selected', selectedEngine === 'google');
 }
 
 async function selectEngine(engine) {
@@ -41,25 +41,21 @@ async function selectEngine(engine) {
   selectedEngine = engine;
   renderEngineSelection();
   await chrome.storage.local.set({ selectedEngine: engine });
-  // 通知 background 刷新引擎选择
   chrome.runtime.sendMessage({ type: 'engine_selected', engine: engine }).catch(() => { });
-  showStatus(engine === 'microsoft' ? '✅ 已切换至微软翻译' : '✅ 已切换至 Worker 代理');
+  var names = { google: 'Google 翻译', microsoft: '微软翻译' };
+  showStatus('✅ 已切换至' + (names[engine] || engine));
 }
 
 async function pingAndRender() {
-  const { workerUrl } = await chrome.storage.local.get('workerUrl');
-
-  // 重置 MS 卡片
+  // 重置卡片状态
   latencyMS.textContent = '—';
   latencyMS.className = 'eng-card-latency testing';
   cardMS.classList.remove('dead-card');
-  // 重置 WK 卡片
-  latencyWK.textContent = '—';
-  latencyWK.className = 'eng-card-latency testing';
-  cardWK.classList.remove('dead-card');
+  latencyGG.textContent = '—';
+  latencyGG.className = 'eng-card-latency testing';
+  cardGG.classList.remove('dead-card');
   netError.classList.remove('show');
 
-  // 恢复已选引擎高亮
   renderEngineSelection();
 
   try {
@@ -71,7 +67,7 @@ async function pingAndRender() {
 
     const results = resp.results;
     const msResult = results.find(r => r.name === 'microsoft');
-    const workerResult = results.find(r => r.name === 'worker-proxy');
+    const ggResult = results.find(r => r.name === 'google');
 
     // 渲染微软卡片
     if (msResult?.ok) {
@@ -85,26 +81,27 @@ async function pingAndRender() {
       if (msResult?.error) latencyMS.setAttribute('data-tooltip', msResult.error);
     }
 
-    // 渲染 Worker 卡片
-    if (workerResult?.ok) {
-      latencyWK.textContent = workerResult.ms + 'ms';
-      latencyWK.className = 'eng-card-latency ' + latencyClass(workerResult.ms);
-      latencyWK.removeAttribute('data-tooltip');
+    // 渲染 Google 卡片
+    if (ggResult?.ok) {
+      latencyGG.textContent = ggResult.ms + 'ms';
+      latencyGG.className = 'eng-card-latency ' + latencyClass(ggResult.ms);
+      latencyGG.removeAttribute('data-tooltip');
     } else {
-      latencyWK.textContent = workerUrl ? '不可用' : '未配置';
-      latencyWK.className = 'eng-card-latency dead';
-      if (!workerUrl) {
-        cardWK.classList.add('dead-card');
-      }
-      if (workerResult?.error) latencyWK.setAttribute('data-tooltip', workerResult.error);
+      latencyGG.textContent = '不可用';
+      latencyGG.className = 'eng-card-latency dead';
+      cardGG.classList.add('dead-card');
+      if (ggResult?.error) latencyGG.setAttribute('data-tooltip', ggResult.error);
     }
 
     const msOk = msResult?.ok;
-    const wkOk = workerResult?.ok;
+    const ggOk = ggResult?.ok;
 
-    if (!msOk && !wkOk) {
+    if (!msOk && !ggOk) {
       netError.classList.add('show');
       actionBtn.classList.add('disabled');
+    } else {
+      netError.classList.remove('show');
+      actionBtn.classList.remove('disabled');
     }
   } catch (e) {
     showBothDead();
@@ -115,23 +112,19 @@ function showBothDead() {
   latencyMS.textContent = '不可用';
   latencyMS.className = 'eng-card-latency dead';
   cardMS.classList.add('dead-card');
-  latencyWK.textContent = '不可用';
-  latencyWK.className = 'eng-card-latency dead';
-  cardWK.classList.add('dead-card');
+  latencyGG.textContent = '不可用';
+  latencyGG.className = 'eng-card-latency dead';
+  cardGG.classList.add('dead-card');
   netError.classList.add('show');
   actionBtn.classList.add('disabled');
 }
-
-// ══════════════════════════════════════════════════════
-// ── 初始化 ──
-// ══════════════════════════════════════════════════════
 
 // ══════════════════════════════════════════════════════
 // ── 引擎卡片点击 ──
 // ══════════════════════════════════════════════════════
 
 cardMS.addEventListener('click', () => selectEngine('microsoft'));
-cardWK.addEventListener('click', () => selectEngine('worker-proxy'));
+cardGG.addEventListener('click', () => selectEngine('google'));
 
 // ══════════════════════════════════════════════════════
 // ── 初始化 ──
@@ -154,9 +147,8 @@ cardWK.addEventListener('click', () => selectEngine('worker-proxy'));
     const { autoTranslate } = await chrome.storage.sync.get('autoTranslate');
     autoChk.checked = autoTranslate !== false;
 
-    // 恢复用户上次选择的引擎
     const { selectedEngine: stored } = await chrome.storage.local.get('selectedEngine');
-    if (stored === 'microsoft' || stored === 'worker-proxy') {
+    if (stored === 'microsoft' || stored === 'google') {
       selectedEngine = stored;
     }
     renderEngineSelection();
@@ -171,39 +163,133 @@ cardWK.addEventListener('click', () => selectEngine('worker-proxy'));
 })();
 
 // ══════════════════════════════════════════════════════
-// ── Worker 配置 (保存/读取) ──
+// ── KV 配置 (保存/读取) ──
 // ══════════════════════════════════════════════════════
 
-const workerUrlInput = $('workerUrl');
-const workerTokenInput = $('workerToken');
-const workerSaveBtn = $('workerSave');
+const cfApiTokenInput = $('cfApiToken');
+const cfAccountIdInput = $('cfAccountId');
+const cfNamespaceIdInput = $('cfNamespaceId');
+const kvCfgExportBtn = $('kvCfgExport');
+const kvCfgImportBtn = $('kvCfgImport');
+const kvCfgImportInput = $('kvCfgImportInput');
+const kvStatusBadge = $('kvStatusBadge');
+const kvSyncBox = $('kvSyncBox');
+const kvSyncHeader = $('kvSyncHeader');
 
-async function loadWorkerConfig() {
-  const data = await chrome.storage.local.get(['workerUrl', 'workerToken']);
-  if (data.workerUrl) workerUrlInput.value = data.workerUrl;
-  if (data.workerToken) workerTokenInput.value = data.workerToken;
+
+async function loadKvConfig() {
+  const data = await chrome.storage.local.get(['cfApiToken', 'cfAccountId', 'cfNamespaceId']);
+  if (data.cfApiToken) cfApiTokenInput.value = data.cfApiToken;
+  if (data.cfAccountId) cfAccountIdInput.value = data.cfAccountId;
+  if (data.cfNamespaceId) cfNamespaceIdInput.value = data.cfNamespaceId;
+  if (data.cfApiToken && data.cfAccountId && data.cfNamespaceId) {
+    pingKv();
+  } else {
+    kvStatusBadge.className = 'kv-status-badge idle';
+    kvStatusBadge.textContent = '未配置';
+  }
 }
 
-workerSaveBtn.addEventListener('click', async () => {
-  let url = workerUrlInput.value.trim();
-  const token = workerTokenInput.value.trim();
-  if (!url) { showStatus('⚠️ 请填入 Worker URL', true); return; }
-  // 自动补齐协议
-  if (!/^https?:\/\//i.test(url)) {
-    url = 'https://' + url;
-    workerUrlInput.value = url;
-  }
-  await chrome.storage.local.set({ workerUrl: url, workerToken: token });
-  // 通知 background 刷新配置缓存
-  chrome.runtime.sendMessage({ type: 'worker_config_updated' }).catch(() => { });
-  showStatus('✅ Worker 配置已保存');
-
-  // 重新 ping 引擎
-  pingAndRender();
+// KV 卡片展开/折叠
+kvSyncHeader.addEventListener('click', () => {
+  kvSyncBox.classList.toggle('open');
 });
 
-// 初始化时加载
-loadWorkerConfig();
+async function pingKv() {
+  kvStatusBadge.className = 'kv-status-badge idle';
+  kvStatusBadge.textContent = '检测中…';
+  try {
+    const resp = await chrome.runtime.sendMessage({ type: 'ping_kv' });
+    if (resp?.ok) {
+      kvStatusBadge.className = 'kv-status-badge ok';
+      kvStatusBadge.textContent = '已连接';
+    } else {
+      kvStatusBadge.className = 'kv-status-badge err';
+      kvStatusBadge.textContent = '连接失败';
+    }
+  } catch (e) {
+    kvStatusBadge.className = 'kv-status-badge err';
+    kvStatusBadge.textContent = '连接失败';
+  }
+}
+
+async function saveKvConfig() {
+  await chrome.storage.local.set({
+    cfApiToken: cfApiTokenInput.value.trim(),
+    cfAccountId: cfAccountIdInput.value.trim(),
+    cfNamespaceId: cfNamespaceIdInput.value.trim()
+  });
+}
+
+// KV 配置 — 离开输入框时自动保存
+cfApiTokenInput.addEventListener('blur', async () => {
+  await saveKvConfig();
+  chrome.runtime.sendMessage({ type: 'kv_config_updated' }).catch(() => { });
+  pingKv();
+});
+cfAccountIdInput.addEventListener('blur', async () => {
+  await saveKvConfig();
+  chrome.runtime.sendMessage({ type: 'kv_config_updated' }).catch(() => { });
+  pingKv();
+});
+cfNamespaceIdInput.addEventListener('blur', async () => {
+  await saveKvConfig();
+  chrome.runtime.sendMessage({ type: 'kv_config_updated' }).catch(() => { });
+  pingKv();
+});
+
+// KV 配置导出
+kvCfgExportBtn.addEventListener('click', async () => {
+  const data = await chrome.storage.local.get(['cfApiToken', 'cfAccountId', 'cfNamespaceId']);
+  const config = {
+    cfApiToken: data.cfApiToken || '',
+    cfAccountId: data.cfAccountId || '',
+    cfNamespaceId: data.cfNamespaceId || '',
+    _exportedAt: new Date().toISOString()
+  };
+  const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  try {
+    await chrome.downloads.download({ url, filename: 'jiyi-kv-config.json', saveAs: true });
+  } catch (_) {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'jiyi-kv-config.json';
+    a.click();
+  }
+  URL.revokeObjectURL(url);
+});
+
+// KV 配置导入
+kvCfgImportBtn.addEventListener('click', () => {
+  kvCfgImportInput.value = '';
+  kvCfgImportInput.click();
+});
+
+kvCfgImportInput.addEventListener('change', async () => {
+  const file = kvCfgImportInput.files?.[0];
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const config = JSON.parse(text);
+    if (!config.cfApiToken || !config.cfAccountId || !config.cfNamespaceId) {
+      showStatus('⚠️ KV 配置文件格式无效，缺少必填字段', true);
+      return;
+    }
+    cfApiTokenInput.value = config.cfApiToken || '';
+    cfAccountIdInput.value = config.cfAccountId || '';
+    cfNamespaceIdInput.value = config.cfNamespaceId || '';
+    await saveKvConfig();
+    chrome.runtime.sendMessage({ type: 'kv_config_updated' }).catch(() => { });
+    pingKv();
+    showStatus('✅ KV 配置已导入并保存');
+  } catch (e) {
+    showStatus('⚠️ 文件解析失败: ' + (e?.message || '未知错误'), true);
+  }
+});
+
+
+loadKvConfig();
 
 async function getTabTranslatedState(tabId) {
   try {
@@ -265,13 +351,17 @@ function setUnavailable(text) {
 
 function showStatus(msg, isErr = false) {
   statusEl.textContent = msg;
+  statusEl.style.opacity = '1';
   statusEl.className = isErr ? 'err' : '';
 
   clearTimeout(showStatus._timer);
   showStatus._timer = setTimeout(() => {
-    statusEl.textContent = '';
-    statusEl.className = '';
-  }, 3000);
+    statusEl.style.opacity = '0';
+    setTimeout(() => {
+      statusEl.textContent = '';
+      statusEl.className = '';
+    }, 200);
+  }, 2800);
 }
 
 function escapeHtml(str) {
@@ -392,14 +482,10 @@ function formatTranslateSuccess(res) {
 // ══════════════════════════════════════════════════════
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  // 域名列表被心跳同步更新 — 刷新 UI
+  // 域名列表被 KV 同步更新
   if (area === 'local' && changes.excludedDomains) {
-    if (!_domainBusy) {
-      domains = changes.excludedDomains.newValue || [];
-      renderDomains(domainInput.value.trim());
-    } else {
-      _pendingCloudDomains = changes.excludedDomains.newValue || [];
-    }
+    domains = changes.excludedDomains.newValue || [];
+    renderDomains(domainInput.value.trim());
     return;
   }
 
@@ -422,33 +508,27 @@ const domainAdd = $('domainAdd');
 const domainAddCurrent = $('domainAddCurrent');
 
 let domains = [];
-let _domainBusy = false;
-let _pendingCloudDomains = null;
 let currentDomain = '';
+let _domainExpanded = false;
+const DOMAIN_PREVIEW = 3;
 
 async function loadDomains() {
-  // 先用本地数据渲染
   const r = await chrome.storage.local.get('excludedDomains');
   domains = Array.isArray(r.excludedDomains) ? r.excludedDomains.filter(d => typeof d === 'string' && d.includes('.')) : [];
   renderDomains();
 
-  // 异步从 Worker KV 拉取云端数据
+  // 后台从 KV 拉取最新列表
   try {
-    const resp = await chrome.runtime.sendMessage({ type: 'kv_list' });
-    if (resp && !resp.error && Array.isArray(resp.domains)) {
-      const cloudDomains = resp.domains.filter(d => typeof d === 'string' && d.includes('.'));
-      const sorted = [...cloudDomains].sort();
-      if (sorted.length !== domains.length || sorted.some((d, i) => d !== domains[i])) {
-        if (!_domainBusy) {
-          domains = sorted;
-          await saveDomains();
-          renderDomains();
-        }
+    const resp = await chrome.runtime.sendMessage({ type: 'kv_sync' });
+    if (resp?.ok) {
+      const r2 = await chrome.storage.local.get('excludedDomains');
+      const cloud = Array.isArray(r2.excludedDomains) ? r2.excludedDomains.filter(d => typeof d === 'string' && d.includes('.')) : [];
+      if (cloud.length !== domains.length || cloud.some((d, i) => d !== domains[i])) {
+        domains = cloud;
+        renderDomains();
       }
     }
-  } catch (_) {
-    // Worker 不可达，保留本地数据
-  }
+  } catch (_) { }
 }
 
 async function saveDomains() {
@@ -468,17 +548,40 @@ function renderDomains(filter) {
       : '<div class="domain-empty">暂无排除域名</div>';
     return;
   }
+
+  const isFiltering = !!filter;
+  const showAll = isFiltering || _domainExpanded;
+  const visible = showAll ? list : list.slice(0, DOMAIN_PREVIEW);
+
+  var safePattern = filter ? filter.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '';
+
   let html = '<table class="domain-table">';
-  for (let i = 0; i < list.length; i++) {
-    const d = list[i];
+  for (let i = 0; i < visible.length; i++) {
+    const d = visible[i];
     const escapedD = escapeHtml(d);
-    // LO-4: 预计算安全正则模式
-    var safePattern = filter ? filter.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '';
     const display = filter ? escapedD.replace(new RegExp('(' + safePattern + ')', 'gi'), '<mark>$1</mark>') : escapedD;
     html += '<tr><td>' + (i + 1) + '</td><td>' + display + '</td><td><span class="del" data-domain="' + escapedD + '">✕</span></td></tr>';
   }
   html += '</table>';
+
+  if (!isFiltering && list.length > DOMAIN_PREVIEW) {
+    if (!_domainExpanded) {
+      html += '<button class="domain-toggle-btn" id="domainExpandBtn">查看全部 ' + list.length + ' 个 ▾</button>';
+    } else {
+      html += '<button class="domain-toggle-btn" id="domainExpandBtn">收起 ▴</button>';
+    }
+  }
+
   domainList.innerHTML = html;
+
+  const expandBtn = domainList.querySelector('#domainExpandBtn');
+  if (expandBtn) {
+    expandBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      _domainExpanded = !_domainExpanded;
+      renderDomains(domainInput.value.trim());
+    });
+  }
 
   const dels = domainList.querySelectorAll('.del');
   for (let j = 0; j < dels.length; j++) {
@@ -490,76 +593,31 @@ function renderDomains(filter) {
 }
 
 async function addDomain(d) {
-  if (_domainBusy) return;
-  _domainBusy = true;
-  try {
-    d = String(d || '').trim().toLowerCase();
-    if (!d || !d.includes('.')) { _domainBusy = false; return; }
-    // ME-6: 使用 Set 进行去重检查，避免 TOCTOU 竞态
-    var domainSet = new Set(domains);
-    if (domainSet.has(d)) {
-      showStatus('⚠️ 域名已存在', true);
-      _domainBusy = false;
-      return;
-    }
-    domains.push(d);
-    domains.sort();
-    await saveDomains();
-    renderDomains();
-    domainInput.value = '';
-    domainClear.classList.remove('show');
-
-    // 同步到 Worker KV
-    try {
-      await chrome.runtime.sendMessage({ type: 'kv_add', domain: d });
-    } catch (_) {
-      showStatus('⚠️ 云端同步失败', true);
-    }
-  } finally {
-    _domainBusy = false;
-    _applyPendingCloudDomains();
+  d = String(d || '').trim().toLowerCase();
+  if (!d || !d.includes('.')) return;
+  var domainSet = new Set(domains);
+  if (domainSet.has(d)) {
+    showStatus('⚠️ 域名已存在', true);
+    return;
   }
+  domains.push(d);
+  domains.sort();
+  await saveDomains();
+  renderDomains();
+  domainInput.value = '';
+  domainClear.classList.remove('show');
+  chrome.runtime.sendMessage({ type: 'kv_put_domains', domains: domains }).then(resp => {
+    if (!resp?.ok) showStatus('⚠️ KV 上传失败: ' + (resp?.error || 'unknown'), true);
+  }).catch(() => { });
 }
 
 async function removeDomain(d) {
-  if (_domainBusy) return;
-  _domainBusy = true;
-  try {
-    domains = domains.filter(x => x !== d);
-    await saveDomains();
-    renderDomains();
-
-    // 同步到 Worker KV
-    try {
-      await chrome.runtime.sendMessage({ type: 'kv_del', domain: d });
-    } catch (_) {
-      showStatus('⚠️ 云端同步失败', true);
-    }
-  } finally {
-    _domainBusy = false;
-    _applyPendingCloudDomains();
-  }
-}
-
-function _applyPendingCloudDomains() {
-  if (_pendingCloudDomains) {
-    // Merge instead of replace: keep locally-added domains, pick up cloud additions
-    const pending = _pendingCloudDomains;
-    _pendingCloudDomains = null;
-    const currentSet = new Set(domains);
-    let changed = false;
-    for (const d of pending) {
-      if (!currentSet.has(d)) {
-        domains.push(d);
-        changed = true;
-      }
-    }
-    if (changed) {
-      domains.sort();
-      saveDomains().catch(() => { });
-      renderDomains(domainInput.value.trim());
-    }
-  }
+  domains = domains.filter(x => x !== d);
+  await saveDomains();
+  renderDomains();
+  chrome.runtime.sendMessage({ type: 'kv_put_domains', domains: domains }).then(resp => {
+    if (!resp?.ok) showStatus('⚠️ KV 上传失败: ' + (resp?.error || 'unknown'), true);
+  }).catch(() => { });
 }
 
 domainAdd.addEventListener('click', () => addDomain(domainInput.value));
@@ -594,40 +652,36 @@ domainInput.addEventListener('keydown', e => {
 })();
 
 // ══════════════════════════════════════════════════════
-// ── 展开 / 折叠（域名区域 hover 展开收起）──
+// ── 展开 / 折叠 ──
 // ══════════════════════════════════════════════════════
 
 (function setupToggles() {
-  function hoverGroup(toggle, content) {
-    var timer = null;
-    function show() {
-      clearTimeout(timer);
-      content.classList.add('show');
-      toggle.classList.add('open');
-    }
-    function scheduleHide() {
-      timer = setTimeout(function () {
-        content.classList.remove('show');
-        toggle.classList.remove('open');
-      }, 120);
-    }
-    toggle.addEventListener('mouseenter', show);
-    toggle.addEventListener('mouseleave', scheduleHide);
-    content.addEventListener('mouseenter', show);
-    content.addEventListener('mouseleave', scheduleHide);
+  const groups = [
+    { toggle: $('engineToggle'), content: $('engineContent') },
+    { toggle: $('domainToggle'), content: $('domainContent') },
+  ].filter(g => g.toggle && g.content);
+
+  function closeAll(except) {
+    groups.forEach(g => {
+      if (g === except) return;
+      g.content.classList.remove('show');
+      g.toggle.classList.remove('open');
+    });
   }
 
-  hoverGroup($('engineToggle'), $('engineContent'));
-  hoverGroup($('domainToggle'), $('domainContent'));
-  hoverGroup($('workerToggle'), $('workerContent'));
-})();
-
-// ══════════════════════════════════════════════════════
-// ── Worker 清除按钮交互 ──
-// ══════════════════════════════════════════════════════
-(function setupWorkerClearBtns() {
-  bindClearButton(workerUrlInput, $('workerUrlClear'));
-  bindClearButton(workerTokenInput, $('workerTokenClear'));
+  groups.forEach(g => {
+    g.toggle.addEventListener('click', () => {
+      const isOpen = g.toggle.classList.contains('open');
+      closeAll(g);
+      if (!isOpen) {
+        g.content.classList.add('show');
+        g.toggle.classList.add('open');
+      } else {
+        g.content.classList.remove('show');
+        g.toggle.classList.remove('open');
+      }
+    });
+  });
 })();
 
 // ══════════════════════════════════════════════════════
@@ -640,7 +694,7 @@ domainInput.addEventListener('keydown', e => {
   let activeTarget = null;
 
   document.addEventListener('mouseover', (e) => {
-    const target = e.target.closest && e.target.closest('[data-tooltip]');
+    const target = e.target.closest && e.target.closest('[data-tooltip], [data-tooltip-html]');
     if (!target) {
       if (activeTarget) {
         tooltip.classList.remove('show');
@@ -652,32 +706,33 @@ domainInput.addEventListener('keydown', e => {
     if (target === activeTarget) return;
     activeTarget = target;
 
-    const text = target.getAttribute('data-tooltip');
+    const html = target.getAttribute('data-tooltip-html');
+    const text = html || target.getAttribute('data-tooltip');
     if (!text) {
       tooltip.classList.remove('show');
       return;
     }
 
-    tooltip.textContent = text;
+    if (html) {
+      tooltip.innerHTML = html;
+    } else {
+      tooltip.textContent = text;
+    }
     tooltip.classList.add('show');
 
-    // 位置与边界智能计算
     const rect = target.getBoundingClientRect();
     const tooltipWidth = tooltip.offsetWidth;
     const tooltipHeight = tooltip.offsetHeight;
 
-    // 默认在上方
     let top = rect.top - tooltipHeight - 8;
     let left = rect.left + rect.width / 2;
     let isBottom = false;
 
-    // 如果上方溢出视区，则显示在下方
     if (top < 4) {
       top = rect.bottom + 8;
       isBottom = true;
     }
 
-    // 水平方向限制在视区内，留有 8px 边距
     const minLeft = tooltipWidth / 2 + 8;
     const maxLeft = window.innerWidth - tooltipWidth / 2 - 8;
     left = Math.max(minLeft, Math.min(left, maxLeft));
@@ -685,17 +740,14 @@ domainInput.addEventListener('keydown', e => {
     tooltip.style.left = left + 'px';
     tooltip.style.top = top + 'px';
 
-    // 切换朝向类以翻转箭头
     tooltip.classList.toggle('bottom', isBottom);
 
-    // 动态调整箭头水平偏移以对齐按钮中心
     const chevronOffset = (rect.left + rect.width / 2) - left;
     tooltip.style.setProperty('--chevron-offset', `calc(50% + ${chevronOffset}px)`);
   });
 
   document.addEventListener('mouseout', (e) => {
     if (!activeTarget) return;
-
     const related = e.relatedTarget;
     if (!related || !activeTarget.contains(related)) {
       tooltip.classList.remove('show');
@@ -705,13 +757,46 @@ domainInput.addEventListener('keydown', e => {
 })();
 
 // ══════════════════════════════════════════════════════
+// ── 导出译文 ──
+// ══════════════════════════════════════════════════════
+
+$('exportTranslations').addEventListener('click', async () => {
+  if (!currentTabId) return;
+  setBusy('🔄 导出中…');
+  try {
+    const res = await chrome.tabs.sendMessage(currentTabId, { action: 'export_translations' });
+    if (res?.pairs?.length) {
+      const lines = res.pairs.map(function (p, i) {
+        return (i + 1) + '. 原文: ' + p.raw + '，译文: ' + p.translated;
+      });
+      const text = lines.join('\n');
+      const ts = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-');
+      const filename = 'jiyi-translations-' + ts + '.txt';
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      showStatus('✅ 已导出 ' + res.pairs.length + ' 条译文');
+    } else {
+      showStatus('⚠️ 没有找到已翻译的内容', true);
+    }
+  } catch (_) {
+    showStatus('⚠️ 导出失败', true);
+  } finally {
+    clearBusy();
+  }
+});
+
+// ══════════════════════════════════════════════════════
 // ── 导出日志 ──
 // ══════════════════════════════════════════════════════
 
 $('exportLogs').addEventListener('click', async () => {
   let all = [];
 
-  // 1. 页面日志 (content script)
   if (currentTabId) {
     try {
       const r = await chrome.tabs.sendMessage(currentTabId, { action: 'get_logs' });
@@ -722,7 +807,6 @@ $('exportLogs').addEventListener('click', async () => {
     } catch (_) { }
   }
 
-  // 2. 后台日志 (background + api)
   try {
     const r = await chrome.runtime.sendMessage({ type: 'get_logs' });
     if (r?.bg?.length) {
@@ -734,6 +818,11 @@ $('exportLogs').addEventListener('click', async () => {
       all.push('');
       all.push('═══ API (BG-API) ═══');
       all = all.concat(r.api);
+    }
+    if (r?.kv?.length) {
+      all.push('');
+      all.push('═══ KV 同步 ═══');
+      all = all.concat(r.kv);
     }
   } catch (_) { }
 
@@ -754,7 +843,6 @@ $('exportLogs').addEventListener('click', async () => {
     } catch (_) { }
   }
 
-  // 降级: 复制到剪贴板
   try {
     await navigator.clipboard.writeText(text);
     showStatus('📋 日志已复制到剪贴板');
@@ -762,4 +850,3 @@ $('exportLogs').addEventListener('click', async () => {
     showStatus('⚠️ 导出失败，请在页面中按 F12 查看控制台', true);
   }
 });
-

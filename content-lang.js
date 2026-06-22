@@ -26,7 +26,6 @@ var FOREIGN_RULES = [
 var FOREIGN_RE = new RegExp(FOREIGN_RULES.map(function (r) { return r.source; }).join('|'));
 
 // ── CJK 统一表意文字 ──
-// 跨文件共享: content.js 的 buildBatches 也需要 CJK_RE
 var CJK_RE = /\p{Unified_Ideograph}/u;
 
 // ── 繁体字集（仅在繁体中文中出现，简体中不存在） ──
@@ -55,30 +54,24 @@ function isAlreadyChinese(text) {
     for (const ch of text) {
         var c = ch.codePointAt(0);
 
-        // Japanese kana
+        // Japanese kana — 立即返回：日语必定不是中文
         if ((c >= 0x3040 && c <= 0x309F) || (c >= 0x30A0 && c <= 0x30FF) ||
             (c >= 0x31F0 && c <= 0x31FF) || (c >= 0xFF65 && c <= 0xFF9F)) {
-            hasKana = true;
-            foreignRun++;
-            if (foreignRun > maxForeignRun) maxForeignRun = foreignRun;
-            anyForeign = true;
-            continue;
+            return false;
         }
 
-        // Korean Hangul
+        // Korean Hangul — 立即返回：韩语必定不是中文
         if ((c >= 0xAC00 && c <= 0xD7AF) || (c >= 0x1100 && c <= 0x11FF) ||
             (c >= 0x3130 && c <= 0x318F)) {
-            hasHangul = true;
-            foreignRun++;
-            if (foreignRun > maxForeignRun) maxForeignRun = foreignRun;
-            anyForeign = true;
-            continue;
+            return false;
         }
 
         if (FOREIGN_RE.test(ch)) {
             foreignRun++;
             if (foreignRun > maxForeignRun) maxForeignRun = foreignRun;
             anyForeign = true;
+            // 连续 2+ 外文字符 → 立即返回，长英文段落无需扫描完整文本
+            if (foreignRun >= 2) return false;
             continue;
         }
 
@@ -86,14 +79,11 @@ function isAlreadyChinese(text) {
         if (CJK_RE.test(ch)) { anyCjk = true; }
     }
 
-    if (hasKana || hasHangul) return false;
     if (!anyForeign && !anyCjk) return true;
-    if (maxForeignRun >= 2) return false;
 
     // 含中文 + 仅数字/单位后缀 → 视为中文 (如 "491K 字幕", "148M 次观看")
     if (anyCjk && anyForeign && maxForeignRun <= 2) {
         // ME-2: 检查是否有真正的英文单词 (2+连续字母) 或缩写
-        // 降低阈值从3到2，避免 "pH", "AI" 等短单词被误判为中文
         var hasRealWord = /[a-zA-Z]{2,}/.test(text);
         var hasAbbrev = /[a-zA-Z][.'][a-zA-Z]/.test(text);
         if (!hasRealWord && !hasAbbrev) return true;
@@ -106,7 +96,10 @@ function isAlreadyChinese(text) {
         // 页面明确标注为简体中文 → 纯 CJK 是中文，跳过翻译
         var htmlLang = (document.documentElement.getAttribute('lang') || '').toLowerCase();
         if (htmlLang === 'zh-cn' || htmlLang === 'zh-hans' || htmlLang === 'zh-sg') return true;
-        // 无明确 lang 或裸 "zh" → 不跳过（可能是日文汉字）
+        // 裸 "zh"（无子标签）：纯 CJK 不含繁体 → 大概率是简体中文 UI 文本，跳过翻译
+        // （真正的日文汉字会混有假名，已被前面的 kana 检查拦截）
+        if (htmlLang === 'zh') return true;
+        // 无明确 lang → 不跳过（可能是日文汉字或繁体中文）
         return false;
     }
 
@@ -132,6 +125,26 @@ var _pageLangForeign = false; // true = 页面 lang 为非中文 CJK 语言(如 
 
 // ── 页面级简体中文检测 ──
 // 采样页面可见文本，判断是否已是简体中文（无需翻译）
+function _isTextChinese(text) {
+    var cjkCount = 0, meaningful = 0;
+    var hasKana = false, hasHangul = false;
+    for (const ch of text) {
+        if (ch <= ' ') continue;
+        meaningful++;
+        var cp = ch.codePointAt(0);
+        if ((cp >= 0x3040 && cp <= 0x309F) || (cp >= 0x30A0 && cp <= 0x30FF) ||
+            (cp >= 0x31F0 && cp <= 0x31FF) || (cp >= 0xFF65 && cp <= 0xFF9F)) hasKana = true;
+        else if ((cp >= 0xAC00 && cp <= 0xD7AF) || (cp >= 0x1100 && cp <= 0x11FF) ||
+            (cp >= 0x3130 && cp <= 0x318F)) hasHangul = true;
+        else if (CJK_RE.test(ch)) cjkCount++;
+    }
+    if (hasKana || hasHangul) return false;
+    if (meaningful === 0 || cjkCount === 0) return false;
+    if (cjkCount / meaningful < 0.3) return false;
+    if (hasTraditionalChinese(text)) return false;
+    return true;
+}
+
 function isPageSimplifiedChinese() {
     var body = document.body;
     if (!body) return false;
@@ -141,7 +154,7 @@ function isPageSimplifiedChinese() {
     _pageLangForeign = false;
     if (htmlLang === 'zh-cn' || htmlLang === 'zh-hans' || htmlLang === 'zh-sg') {
         var quickText = (document.title || '') + ' ' + (document.body?.textContent || '').slice(0, 600);
-        if (isAlreadyChinese(quickText)) return true;
+        if (_isTextChinese(quickText)) return true;
     }
     // 明确标注非中文语言 → 不跳过（不含 bare "zh"，避免误拦繁体页面）
     if (htmlLang && htmlLang !== 'zh' && !htmlLang.startsWith('zh-')) {
@@ -157,13 +170,12 @@ function isPageSimplifiedChinese() {
             var parent = node.parentElement;
             if (!parent) return NodeFilter.FILTER_REJECT;
             var tag = parent.tagName;
-            // ME-3: 跳过导航和页眉页脚元素，避免采样偏差
+            if (tag) tag = tag.toUpperCase();
             if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT' ||
                 tag === 'SVG' || tag === 'IFRAME' || tag === 'CODE' || tag === 'PRE' ||
                 tag === 'NAV' || tag === 'HEADER' || tag === 'FOOTER') {
                 return NodeFilter.FILTER_REJECT;
             }
-            // 快速隐藏检测：offsetParent 为 null 且不是 fixed/absolute 定位 → 不可见
             if (parent.offsetParent === null && parent.offsetWidth === 0 && parent.offsetHeight === 0) {
                 var pos = '';
                 try { pos = getComputedStyle(parent).position; } catch (_) { }
@@ -185,7 +197,7 @@ function isPageSimplifiedChinese() {
     if (samples.length === 0) return false;
 
     var combined = samples.join(' ');
-    return isAlreadyChinese(combined);
+    return _isTextChinese(combined);
 }
 
 // ── 混合文本的源语言推断 ──
@@ -199,7 +211,8 @@ function detectSourceLang(text) {
         total++;
 
         if ((c >= 0x41 && c <= 0x5A) || (c >= 0x61 && c <= 0x7A) ||
-            (c >= 0xC0 && c <= 0x24F && c !== 0xD7 && c !== 0xF7 && c !== 0x17F)) latin++;
+            (c >= 0xC0 && c <= 0x17F && c !== 0xD7 && c !== 0xF7 && c !== 0x17F) ||
+            (c >= 0x1A0 && c <= 0x1B0) || (c >= 0x1EA0 && c <= 0x1EF9)) latin++;
         else if ((c >= 0x3040 && c <= 0x30FF) || (c >= 0x31F0 && c <= 0x31FF) ||
             (c >= 0xFF65 && c <= 0xFF9F)) kana++;
         else if (c >= 0xAC00 && c <= 0xD7AF) hangul++;
@@ -222,11 +235,17 @@ function detectSourceLang(text) {
 
     var foreign = latin + kana + hangul + cyrillic + arabic + thai;
     if (foreign < 2) return 'auto';
-    if (cjk > 0 && foreign / cjk < 0.43) return 'auto';
+
+    // CJK 占比高时让 API 自行判断（避免将汉字为主的日文误判为中文）
+    if (cjk > 0 && foreign / cjk < 0.35) return 'auto';
 
     var max = Math.max(latin, kana, hangul, cyrillic, arabic, thai);
     if (max === cyrillic) return 'ru';
     if (max === arabic) return 'ar';
     if (max === thai) return 'th';
+
+    // 拉丁字符为主但含少量 CJK → 大概率是英文（如技术文档中的汉字术语）
+    if (max === latin && latin > total * 0.7) return 'en';
+
     return 'en';
 }

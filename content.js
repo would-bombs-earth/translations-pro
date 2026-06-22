@@ -1,27 +1,18 @@
-
+﻿
 // content.js
-// Translation Engine v3 — 核心: DOM 处理 / 翻译管线 / 还原 / Observer / 初始化
-// 依赖: content-globals.js (全局状态), content-lang.js (语言检测)
 
-// ═══════════════════════════════════════════════════════════
 // manual flush promise (Fix 1+6: real count from translatePage)
-// ═══════════════════════════════════════════════════════════
 
-var _manualFlushResolvers = [];
-var _flushGen = 0;
-var _inflightBatches = {}; // groupId → { batch, gen, seq, isSolo, t0, applied, total }
-var _incrementalApplied = 0; // 增量调度期间成功翻译的节点数
+var _flR = [], _flushGen = 0, _iF = {}, _iA = 0;
 
-// ═══════════════════════════════════════════════════════════
 // node processing
-// ═══════════════════════════════════════════════════════════
 
 function enqueueNode(node) {
-  if (translationMode === 'off') return;
+  if (tMode === 'off') return;
   if (!node) return;
   if (queue.size > MAX_QUEUE) return;
 
-  // ShadowRoot / DocumentFragment — walk children, then recurse into nested shadows
+  // ShadowRoot / DocumentFragment 鈥?walk children, then recurse into nested shadows
   if (node.nodeType === Node.DOCUMENT_FRAGMENT_NODE) {
     observeShadowRoot(node);
     const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
@@ -55,10 +46,8 @@ function enqueueNode(node) {
   for (const sr of shadowRootsIn(node)) enqueueNode(sr);
 }
 
-// Translatable attributes — 已移至 content-globals.js
-
 function processElementAttrs(el, onlyAttr) {
-  if (translationMode === 'off') return;
+  if (tMode === 'off') return;
   if (!el || el.nodeType !== Node.ELEMENT_NODE) return;
   if (isSkippable(el)) return;
 
@@ -75,7 +64,7 @@ function processElementAttrs(el, onlyAttr) {
     if (SKIP_RE.test(text)) continue;
     if (SKIP_CN_RE.test(text)) continue;
 
-    // Cache hit → apply immediately (before language check — faster)
+    // Cache hit 鈫?apply immediately (before language check 鈥?faster)
     var cachedTrans = cacheGet(text);
     if (cachedTrans !== undefined) {
       if (cachedTrans !== text) {
@@ -96,14 +85,12 @@ function processElementAttrs(el, onlyAttr) {
     if (done && done.has(attr)) {
       const record = done.get(attr);
       if (normalize(record.translated) === text) continue;
-      // Content changed externally — remove old translation mapping
+      // Content changed externally 鈥?remove old translation mapping
       done.delete(attr);
-      if (el.__gt_orig_attrs && attr in el.__gt_orig_attrs) {
-        delete el.__gt_orig_attrs[attr];
-      }
+      if (el.__gt_orig_attrs && attr in el.__gt_orig_attrs) delete el.__gt_orig_attrs[attr];
     }
 
-    // From here on, this is new/changed foreign text — allow re-processing
+    // From here on, this is new/changed foreign text 鈥?allow re-processing
 
     // Create a lightweight wrapper that mimics a text node
     const attrNode = {
@@ -129,7 +116,7 @@ function processElementAttrs(el, onlyAttr) {
 }
 
 function processTextNode(node) {
-  if (translationMode === 'off') return;
+  if (tMode === 'off') return;
   if (!node.parentElement) return;
   if (isSkippable(node.parentElement)) return;
 
@@ -146,21 +133,28 @@ function processTextNode(node) {
   // Skip Chinese UI patterns (e.g. 点击 关注 username)
   if (SKIP_CN_RE.test(text)) { diag.skipCnRe++; return; }
 
-  // Cache hit → apply immediately without queuing (before language check — faster)
+  // Cache hit 鈫?apply immediately without queuing (before language check 鈥?faster)
   var cachedTrans2 = cacheGet(text);
   if (cachedTrans2 !== undefined) {
     if (cachedTrans2 !== text) {
       diag.cached++;
       // Capture original text content now; applyTranslation won't overwrite it
-      if (node.__gt_orig === undefined) {
-        node.__gt_orig = node.textContent;
-      }
+      if (node.__gt_orig === undefined) node.__gt_orig = node.textContent;
       mute(() => applyTranslation(node, text, cachedTrans2));
     }
     return;
   }
 
   if (isAlreadyChinese(text)) { diag.alreadyChinese++; return; }
+
+  // Fast cache hit: if already translated and this is a React-rebuilt node
+  var fastCache = cacheGet(text);
+  if (fastCache !== undefined && fastCache !== text && !origTextMap.has(node)) {
+    if (node.__gt_orig === undefined) node.__gt_orig = raw;
+    origTextMap.set(node, { raw: text, translated: fastCache });
+    mute(() => applyTranslation(node, text, fastCache));
+    return;
+  }
 
   // Node was previously translated but content has changed externally
   // (e.g. "show more" expanded the textContent of the same node).
@@ -170,7 +164,7 @@ function processTextNode(node) {
     unregisterTextRestore(node);
   }
 
-  // Dedup: same text already queued → track node for later apply
+  // Dedup: same text already queued 鈫?track node for later apply
   if (seenText.has(text)) {
     // still queue so buildBatches can apply from cache after translation
     node.__gtRaw = text;
@@ -179,7 +173,7 @@ function processTextNode(node) {
   }
 
   node.__gtRaw = text;
-  if (node.__gt_orig === undefined) node.__gt_orig = raw;
+  node.__gt_orig = raw;
   seenAdd(text);
   queue.add(node);
   diag.queued++;
@@ -187,16 +181,11 @@ function processTextNode(node) {
   _dbg('detect', { text });
 }
 
-// ── 增量调度：扫描过程中队列达到阈值即立即发送翻译 ──
 function dispatchIncremental() {
-  if (translationMode === 'off' || !isAlive()) return;
+  if (tMode === 'off' || !isAlive()) return;
   if (queue.size < INCREMENTAL_THRESHOLD) return;
 
-  // 从队列取出最多 BATCH_SIZE 个节点，构建批次并异步发送
-  var nodes = [];
-  var iter = queue.values();
-  var count = 0;
-  var next;
+  var nodes = [], iter = queue.values(), count = 0, next;
   while (count < BATCH_SIZE && !(next = iter.next()).done) {
     nodes.push(next.value);
     queue.delete(next.value);
@@ -204,73 +193,44 @@ function dispatchIncremental() {
   }
   if (nodes.length === 0) return;
 
-  // 预处理：__gtRaw 已在 processTextNode 设置，直接取用
   var processed = [];
   _muteDepth++;
-  try {
-    for (var i = 0; i < nodes.length; i++) {
-      var node = nodes[i];
-      if (!node?.parentElement) continue;
-      var raw = node.__gtRaw;
-      if (!raw) continue;
-      // cache + language 已在 processTextNode 检查过，直接入批
-      processed.push(node);
-    }
-  } finally {
-    _muteDepth--;
-  }
+  try { processed = nodes.filter(n => n?.parentElement && n.__gtRaw); } finally { _muteDepth--; }
 
   if (processed.length === 0) return;
 
   var batches = buildBatches(processed);
-  // 异步发送，不阻塞扫描
-  for (var b = 0; b < batches.length; b++) {
-    translateBatch(batches[b]);
-  }
+  batches.forEach(b => translateBatch(b));
 }
 
-function scanInitial() {
-  if (translationMode === 'off') return;
+function scanInitial(skipHydration) {
+  if (tMode === 'off') return;
 
-  // 全面检测 React/Vue/Next.js 水合
-  var hasHydration = !!(function () {
-    // DOM 容器
-    if (document.getElementById('__docusaurus') ||
-      document.getElementById('__next') ||
-      document.getElementById('___gatsby') ||
-      document.getElementById('app') ||
-      document.querySelector('[data-reactroot]') ||
-      document.querySelector('[data-react-class]')) return true;
-    // 全局变量
-    if (window.__NEXT_DATA__ || window.__NUXT__ || window.__GATSBY__ ||
-      window.__REACT_DEVTOOLS_GLOBAL_HOOK__) return true;
-    // <script> 标签中的框架特征
-    var scripts = document.querySelectorAll('script[src]');
-    for (var i = 0; i < scripts.length; i++) {
-      var s = scripts[i].src || scripts[i].textContent || '';
-      if (/react|next|vue|angular|svelte|docusaurus|nuxt|gatsby/i.test(s)) return true;
-    }
-    return false;
-  })();
+  var hasHydration = skipHydration ? false : (
+    !!document.querySelector('#__docusaurus,#__next,#___gatsby,#app,[data-reactroot],[data-react-class]') ||
+    !!(window.__NEXT_DATA__ || window.__NUXT__ || window.__GATSBY__ || window.__REACT_DEVTOOLS_GLOBAL_HOOK__) ||
+    function() {
+      for (var s of document.querySelectorAll('script[src]')) if (/react|next|vue|angular|svelte|docusaurus|nuxt|gatsby/i.test(s.src||s.textContent||'')) return true;
+      return false;
+    }()
+  );
 
   var delay = hasHydration ? HYDRATION_DELAY_MS : 0;
 
-  // 用 requestIdleCallback 延迟扫描，让浏览器先完成首帧渲染
-  // 动态内容由已启动的 MutationObserver 捕获
   const doScan = function () {
-    if (translationMode === 'off') return;
+    if (tMode === 'off') return;
+    var titleEl = document.querySelector('title');
+    if (titleEl && titleEl.firstChild && titleEl.firstChild.nodeType === Node.TEXT_NODE) processTextNode(titleEl.firstChild);
     enqueueNode(document.body);
-    const attrSelector = TRANSLATABLE_ATTRS.map(function (a) { return '[' + a + ']'; }).join(',');
+    const attrSelector = TRANSLATABLE_ATTRS.map(a => '[' + a + ']').join(',');
     var els = querySelectorAllDeep(document.body, attrSelector);
-    for (var i = 0; i < els.length; i++) {
-      processElementAttrs(els[i]);
-    }
+    els.forEach(el => processElementAttrs(el));
     scheduleFlush();
   };
 
   if (delay > 0) {
-    LOG('检测到 SPA 框架，延迟 ' + delay + 'ms 等待水合完成');
-    setTimeout(function () {
+    LOG_DOM('检测到 SPA 框架，延迟' + delay + 'ms 等待水合完成');
+    setTimeout(() => {
       if (typeof requestIdleCallback === 'function') {
         requestIdleCallback(doScan, { timeout: 800 });
       } else {
@@ -284,13 +244,9 @@ function scanInitial() {
   }
 }
 
-// querySelectorAllDeep — 已移至 content-globals.js
-
-// ═══════════════════════════════════════════════════════════
-
 // Shared mutation handler used for both main DOM and shadow-root observers
 function onMutation(mutations) {
-  if (translationMode === 'off') return;
+  if (tMode === 'off') return;
   if (_muteDepth > 0) return;
   for (const m of mutations) {
     if (m.type === 'childList') {
@@ -302,28 +258,22 @@ function onMutation(mutations) {
             const entry = _shadowObservers[i];
             if (entry.root.host === n || n.contains(entry.root.host)) {
               entry.observer.disconnect();
-              observedShadows.delete(entry.root);
+              _oS.delete(entry.root);
               _shadowObservers.splice(i, 1);
             }
           }
         }
       }
     }
-    if (m.type === 'characterData') {
-      processTextNode(m.target);
-    }
-    if (m.type === 'attributes') {
-      processElementAttrs(m.target, m.attributeName);
-    }
+    if (m.type === 'characterData') processTextNode(m.target);
+    if (m.type === 'attributes') processElementAttrs(m.target, m.attributeName);
   }
   scheduleFlush();
 }
 
-// observedShadows — 已移至 content-globals.js
-
 function observeShadowRoot(sr) {
-  if (!sr || observedShadows.has(sr)) return;
-  observedShadows.add(sr);
+  if (!sr || _oS.has(sr)) return;
+  _oS.add(sr);
   const obs = new MutationObserver(onMutation);
   obs.observe(sr, {
     childList: true,
@@ -338,7 +288,7 @@ function observeShadowRoot(sr) {
 function startObserver() {
   if (observer) return;
   observer = new MutationObserver(onMutation);
-  observer.observe(document.body, {
+  observer.observe(document.documentElement, {
     childList: true,
     subtree: true,
     characterData: true,
@@ -353,25 +303,19 @@ function stopObserver() {
     observer = null;
   }
   // Disconnect all shadow-root observers to prevent resource leak
-  for (var i = 0; i < _shadowObservers.length; i++) {
-    _shadowObservers[i].observer.disconnect();
-  }
+  _shadowObservers.forEach(e => e.observer.disconnect());
   _shadowObservers = [];
-  observedShadows = new WeakSet();
+  _oS = new WeakSet();
 }
-
-// ─────────────────────────────────────────────
-// flush scheduling
-// ─────────────────────────────────────────────
 
 let flushTimer = null;
 
 function scheduleFlush() {
-  if (translationMode === 'off') return;
+  if (tMode === 'off') return;
   if (translating || flushTimer || !isAlive()) return;
   flushTimer = setTimeout(() => {
     flushTimer = null;
-    if (isAlive() && translationMode !== 'off') flushQueue();
+    if (isAlive() && tMode !== 'off') flushQueue();
   }, FLUSH_MS);
 }
 
@@ -383,23 +327,16 @@ function clearPendingWork() {
   }
 }
 
-// ─────────────────────────────────────────────
-// batch building
-// ─────────────────────────────────────────────
-
 function buildBatches(nodes) {
   const batches = [];
-  let current = [];
-  let chars = 0;
+  let current = [], chars = 0;
   for (const node of nodes) {
     const raw = node.__gtRaw || normalize(node.textContent);
 
-    // Cache hit → apply immediately, skip batch
+    // Cache hit 鈫?apply immediately, skip batch
     var cachedRaw = cacheGet(raw);
     if (cachedRaw !== undefined) {
-      if (cachedRaw !== raw) {
-        mute(() => applyTranslation(node, raw, cachedRaw));
-      }
+      if (cachedRaw !== raw) mute(() => applyTranslation(node, raw, cachedRaw));
       continue;
     }
 
@@ -408,12 +345,10 @@ function buildBatches(nodes) {
 
     // Solo batch for:
     //  (1) long text (avoids marker corruption)
-    //  (2) pure CJK without kana/hangul — could be Trad.Chinese or pure-kanji Japanese;
+    //  (2) pure CJK without kana/hangul 鈥?could be Trad.Chinese or pure-kanji Japanese;
     //      mixing these in marker batches with sl=auto causes Google to misdetect.
-    //  Japanese with kana / Korean with hangul are unambiguous → can batch safely.
-    const hasCjk = CJK_RE.test(raw);
-    const hasKana = KANA_RE.test(raw);
-    const hasHangul = HANGUL_RE.test(raw);
+    //  Japanese with kana / Korean with hangul are unambiguous 鈫?can batch safely.
+    const hasCjk = CJK_RE.test(raw), hasKana = KANA_RE.test(raw), hasHangul = HANGUL_RE.test(raw);
     const needsSolo = hasCjk && !hasKana && !hasHangul;
     if (raw.length > SOLO_THRESHOLD || needsSolo) {
       if (current.length) {
@@ -444,10 +379,6 @@ function buildBatches(nodes) {
   return batches;
 }
 
-// ─────────────────────────────────────────────
-// parse translated response
-// ─────────────────────────────────────────────
-
 function parseTranslated(text) {
   const result = new Map();
 
@@ -455,7 +386,7 @@ function parseTranslated(text) {
   // 仅匹配行首的孤立 [N]（Google 转换产物），避免误伤 "see [1]" 等正常引用
   text = text.replace(/(^|\n)\[(\d+)\]/gm, '$1' + MARK_L + '$2' + MARK_R);
   text = text.replace(/【(\d+)】/g, MARK_L + '$1' + MARK_R);
-  // Google 可能在标记内部插入空格，归一化 ⟪ 1 ⟫ → ⟪1⟫
+  // Google 可能在标记内部插入空格，归一化 ⟪1 ⟫ → ⟪⟫
   text = text.replace(/\u27EA\s*(\d+)\s*\u27EB/g, MARK_L + '$1' + MARK_R);
 
   // MARK_R may be dropped by Google Translate; make it optional
@@ -466,13 +397,12 @@ function parseTranslated(text) {
 
   let m;
   while ((m = regex.exec(text))) {
-    const id = Number(m[1]);
-    const content = m[2].trim();
+    const id = Number(m[1]), content = m[2].trim();
     result.set(id, cleanTranslation(content));
   }
 
   if (result.size === 0) {
-    // ME-1: fallback — line-by-line order matching, filter empty/whitespace-only lines
+    // ME-1: fallback 鈥?line-by-line order matching, filter empty/whitespace-only lines
     const lines = text
       .split(/\n/)
       .map(s => cleanTranslation(s))
@@ -486,21 +416,27 @@ function parseTranslated(text) {
   return result;
 }
 
-// 翻译回退函数 — 已移至 content-globals.js
+function _tryExtract(translation, item, pairs) {
+  var idStr = String(item.id), idx = translation.indexOf(idStr), cleaned;
+  if (idx === -1) return;
+  var before = idx > 0 ? translation[idx - 1] : '\n', after = translation[idx + idStr.length] || '';
+  if (before !== MARK_L && before !== '[' && before !== '【' && before !== '\n' &&
+  after !== MARK_R && after !== ']' && after !== '】') return;
+  var tail = translation.slice(idx + idStr.length), breakPoints = [tail.indexOf(MARK_L), tail.indexOf('\n')].filter(p => p >= 0);
+  var end = breakPoints.length ? Math.min.apply(null, breakPoints) : -1, snippet = (end >= 0 ? tail.slice(0, end) : tail).trim();
+  if (!snippet || !snippet.length || !(cleaned = cleanTranslation(snippet))) return;
+  cacheSet(item.raw, cleaned);
+  applyTranslation(item.node, item.raw, cleaned);
+  pairs.push({ id: item.id, raw: item.raw, translated: cleaned });
+}
 
-// ═══════════════════════════════════════════════════════════
-// translate & apply
-// ═══════════════════════════════════════════════════════════
-
-// 执行翻译结果到 DOM 的应用（供流式和非流式共用），返回 applied pairs
-function _applyTranslationResult(batch, translation, isSolo) {
+function _applyTr(batch, translation, isSolo) {
   var pairs = [];
 
   _muteDepth++;
   try {
     if (isSolo) {
-      var item = batch[0];
-      var translated = cleanTranslation(translation);
+      var item = batch[0], translated = cleanTranslation(translation);
       if (translated) {
         cacheSet(item.raw, translated);
         applyTranslation(item.node, item.raw, translated);
@@ -510,8 +446,7 @@ function _applyTranslationResult(batch, translation, isSolo) {
       var parsed = parseTranslated(translation);
 
       if (parsed.fallbackLines) {
-        var lines = parsed.fallbackLines;
-        var n = Math.min(batch.length, lines.length);
+        var lines = parsed.fallbackLines, n = Math.min(batch.length, lines.length);
         for (var i = 0; i < n; i++) {
           var t = lines[i];
           if (!t) continue;
@@ -519,36 +454,11 @@ function _applyTranslationResult(batch, translation, isSolo) {
           applyTranslation(batch[i].node, batch[i].raw, t);
           pairs.push({ raw: batch[i].raw, translated: t });
         }
-        if (n < batch.length) {
-          for (var j = n; j < batch.length; j++) {
-            var missedItem = batch[j];
-            var idStr = String(missedItem.id);
-            var idx = translation.indexOf(idStr);
-            if (idx !== -1) {
-              var before = idx > 0 ? translation[idx - 1] : '\n';
-              var after = translation[idx + idStr.length] || '';
-              if (before !== MARK_L && before !== '[' && before !== '【' && before !== '\n' &&
-                  after !== MARK_R && after !== ']' && after !== '】') continue;
-              var tail = translation.slice(idx + idStr.length);
-              var breakPoints = [tail.indexOf(MARK_L), tail.indexOf('\n')].filter(function(p) { return p >= 0; });
-              var end = breakPoints.length ? Math.min.apply(null, breakPoints) : -1;
-              var snippet = (end >= 0 ? tail.slice(0, end) : tail).trim();
-              if (snippet && snippet.length > 0) {
-                var cleaned = cleanTranslation(snippet);
-                if (cleaned) {
-                  cacheSet(missedItem.raw, cleaned);
-                  applyTranslation(missedItem.node, missedItem.raw, cleaned);
-                  pairs.push({ id: missedItem.id, raw: missedItem.raw, translated: cleaned });
-                }
-              }
-            }
-          }
-        }
+        if (n < batch.length) batch.slice(n).forEach(b => _tryExtract(translation, b, pairs));
       } else {
         var unmatched = [];
         for (var k = 0; k < batch.length; k++) {
-          var batchItem = batch[k];
-          var matchedTrans = parsed.get(batchItem.id);
+          var batchItem = batch[k], matchedTrans = parsed.get(batchItem.id);
           if (matchedTrans) {
             cacheSet(batchItem.raw, matchedTrans);
             applyTranslation(batchItem.node, batchItem.raw, matchedTrans);
@@ -557,31 +467,7 @@ function _applyTranslationResult(batch, translation, isSolo) {
             unmatched.push(batchItem);
           }
         }
-        if (unmatched.length > 0) {
-          for (var u = 0; u < unmatched.length; u++) {
-            var uItem = unmatched[u];
-            var uIdStr = String(uItem.id);
-            var uIdx = translation.indexOf(uIdStr);
-            if (uIdx !== -1) {
-              var uBefore = uIdx > 0 ? translation[uIdx - 1] : '\n';
-              var uAfter = translation[uIdx + uIdStr.length] || '';
-              if (uBefore !== MARK_L && uBefore !== '[' && uBefore !== '【' && uBefore !== '\n' &&
-                  uAfter !== MARK_R && uAfter !== ']' && uAfter !== '】') continue;
-              var uTail = translation.slice(uIdx + uIdStr.length);
-              var uBreakPoints = [uTail.indexOf(MARK_L), uTail.indexOf('\n')].filter(function(p) { return p >= 0; });
-              var uEnd = uBreakPoints.length ? Math.min.apply(null, uBreakPoints) : -1;
-              var uSnippet = (uEnd >= 0 ? uTail.slice(0, uEnd) : uTail).trim();
-              if (uSnippet && uSnippet.length > 0) {
-                var uCleaned = cleanTranslation(uSnippet);
-                if (uCleaned) {
-                  cacheSet(uItem.raw, uCleaned);
-                  applyTranslation(uItem.node, uItem.raw, uCleaned);
-                  pairs.push({ id: uItem.id, raw: uItem.raw, translated: uCleaned });
-                }
-              }
-            }
-          }
-        }
+        if (unmatched.length > 0) unmatched.forEach(u => _tryExtract(translation, u, pairs));
       }
     }
   } finally {
@@ -592,13 +478,9 @@ function _applyTranslationResult(batch, translation, isSolo) {
 }
 
 async function translateBatch(batch) {
-  if (!isAlive() || translationMode === 'off') return;
+  if (!isAlive() || tMode === 'off') return;
 
-  const gen = _flushGen;
-  const seq = ++batchSeq;
-
-  const isSolo = batch.length === 1 && batch[0].solo;
-  const text = isSolo
+  const gen = _flushGen, seq = ++batchSeq, isSolo = batch.length === 1 && batch[0].solo, text = isSolo
     ? batch[0].raw
     : batch.map(x => x.payload).join('\n');
 
@@ -610,13 +492,10 @@ async function translateBatch(batch) {
 
   const t0 = performance.now();
 
-  let result;
-  let sl;
+  let result, sl;
   if (isSolo) {
     sl = detectSourceLang(text);
   } else if (batch.length === 1) {
-    // 单条非solo批次：用显式语言检测，避免 MS auto-detect 将
-    // 高 CJK 占比的日文（如：仅少量假名的混合文本）误判为中文
     sl = detectSourceLang(batch[0].raw);
   } else {
     sl = 'auto';
@@ -632,35 +511,32 @@ async function translateBatch(batch) {
         domain: location.hostname,
         groupId: seq
       });
-      break; // success — exit retry loop
+      break; // success 鈥?exit retry loop
     } catch (e) {
       if (retry < 2) {
         await new Promise(r => setTimeout(r, 50 * (retry + 1)));
       } else {
         // Background script crashed or disconnected after all retries
         result = { error: 'BG连接失败: ' + e.message };
-        if (e.message === 'Extension context invalidated') {
-          _handleExtensionGone();
-        }
+        if (e.message === 'Extension context invalidated') _handleExtensionGone();
       }
     }
   }
 
   // Stale result — restorePage or translatePage happened while this batch was in-flight.
   // Check BEFORE applying any fallback, so we don't overwrite restored text.
-  if (gen !== _flushGen || translationMode === 'off') return;
+  if (gen !== _flushGen || tMode === 'off') return;
 
-  // If background returned an error — no fallback, just log and fail
+  // If background returned an error 鈥?no fallback, just log and fail
   if (result?.error) {
-    ERR('翻译失败:', result.error, '| sl=', sl, '| text前100字:', text.slice(0, 100));
+    ERR('翻译失败:', result.error, '| sl=', sl, '| text前100字', text.slice(0, 100));
     diag.apiErrors.push(result.error);
     diag.failed += batch.length;
     return;
   }
 
-  // 流式模式：后台会分批推送 apply_translation，这里只存批次数据
   if (result?.accepted) {
-    _inflightBatches[seq] = { batch: batch, gen: gen, seq: seq, isSolo: isSolo, t0: t0, applied: 0, total: batch.length };
+    _iF[seq] = { batch: batch, gen: gen, seq: seq, isSolo: isSolo, t0: t0, applied: 0, total: batch.length };
     return;
   }
 
@@ -670,7 +546,7 @@ async function translateBatch(batch) {
   }
 
   const elapsed = performance.now() - t0;
-  var pairs = _applyTranslationResult(batch, result.translation, isSolo);
+  var pairs = _applyTr(batch, result.translation, isSolo);
   _dbg('batch_done', { seq: seq, count: pairs.length, elapsed: elapsed, pairs: pairs, engine: result.engine || '' });
   diag.translated += pairs.length;
 }
@@ -678,8 +554,7 @@ async function translateBatch(batch) {
 function applyTranslation(node, raw, translated) {
   // Handle attribute wrapper objects
   if (node.__isAttr) {
-    const el = node.__el;
-    const attr = node.__attr;
+    const el = node.__el, attr = node.__attr;
     if (!el.isConnected) return;
     const cleanAttrVal = cleanTranslation(translated);
     // Store original attr value for restore (only first time)
@@ -695,35 +570,29 @@ function applyTranslation(node, raw, translated) {
     return;
   }
 
-  // Normal text node — check if still in DOM
+  // Normal text node 鈥?check if still in DOM
   if (node.parentElement && node.isConnected) {
     const translatedText = cleanTranslation(translated);
-    if (node.__gt_orig !== undefined && node.textContent === translatedText) return;
-    // Store original text for restore — only if not already captured by flushQueue
-    // or processTextNode (otherwise a page-side modification between snapshot and
-    // apply would be incorrectly saved as the "original").
+    if (!translatedText) return;
+    if (normalize(translatedText) === normalize(raw)) return;
     if (node.__gt_orig === undefined) {
       node.__gt_orig = node.textContent;
     }
-    // Also track in WeakMap for dedup (processTextNode re-entry guard)
     origTextMap.set(node, { raw: raw, translated: translatedText });
+    // Simple direct write 鈥?no DOM structure changes, no React breakage
     node.textContent = translatedText;
     return;
   }
 
-  // Node is detached (framework re-rendered) — skip it.
-  // The MutationObserver will pick up its replacement when it's re-added.
+  // Node is detached 鈥?skip.
 }
 
-// ─────────────────────────────────────────────
-// flush queue
-// ─────────────────────────────────────────────
 
 async function flushQueue() {
-  if (translationMode === 'off') {
+  if (tMode === 'off') {
     clearPendingWork();
-    if (_manualFlushResolvers.length > 0) {
-      const rs = _manualFlushResolvers; _manualFlushResolvers = [];
+    if (_flR.length > 0) {
+      const rs = _flR; _flR = [];
       for (const r of rs) r(0);
     }
     return { skipped: true, reason: 'disabled', count: 0 };
@@ -739,7 +608,7 @@ async function flushQueue() {
     // Atomically drain the queue into a snapshot before iterating.
     // This prevents the MutationObserver (which fires synchronously during
     // textContent reads inside normalize()) from adding new entries that
-    // the for…of iterator might skip or visit depending on hash-table order.
+    // the for鈥f iterator might skip or visit depending on hash-table order.
     const queuedNodes = [...queue];
     queue.clear();
 
@@ -751,14 +620,12 @@ async function flushQueue() {
         const raw = normalize(node.textContent);
         if (!raw) continue;
 
-        // Snapshot the text — downstream code uses this, not a re-read from DOM
+        // Snapshot the text 鈥?downstream code uses this, not a re-read from DOM
         node.__gtRaw = raw;
         // Also capture the restore target NOW, before the page can modify it.
         // applyTranslation itself won't overwrite this unless unregisterTextRestore
         // cleared it first (which means the node's content changed externally).
-        if (node.__gt_orig === undefined) {
-          node.__gt_orig = node.textContent;
-        }
+        if (node.__gt_orig === undefined) node.__gt_orig = node.textContent;
 
         var cachedNode = cacheGet(raw);
         if (cachedNode !== undefined) {
@@ -781,26 +648,23 @@ async function flushQueue() {
 
     async function worker() {
       while (index < batches.length) {
-        if (translationMode === 'off') return;
+        if (tMode === 'off') return;
         const i = index++;
         try {
           await translateBatch(batches[i]);
         } catch (e) {
-          ERR('translateBatch 未预期异常:', e?.message || e, '| batchSeq:', batches[i]?.[0]?.id || '?');
+          ERR('translateBatch 未预期异常', e?.message || e, '| batchSeq:', batches[i]?.[0]?.id || '?');
           diag.failed += batches[i] ? batches[i].length : 0;
         }
       }
     }
 
-    const workerCount = Math.min(CONCURRENT, batches.length);
-    const workers = [];
-    for (let i = 0; i < workerCount; i++) {
-      workers.push(worker());
-    }
+    const workerCount = Math.min(CONCURRENT, batches.length), workers = [];
+    for (let i = 0; i < workerCount; i++) workers.push(worker());
 
     await Promise.all(workers);
 
-    if (translationMode === 'off') return { skipped: true, reason: 'disabled', count: 0 };
+    if (tMode === 'off') return { skipped: true, reason: 'disabled', count: 0 };
 
     // Second pass: only handle untranslated nodes (most are already done)
     _muteDepth++;
@@ -823,7 +687,6 @@ async function flushQueue() {
           const el = node.__el;
           const attr = node.__attr;
           if (el.__gt_orig_attrs && attr in el.__gt_orig_attrs) {
-            // HI-5: 回滚前临时增加 mute 深度，防止触发 Observer 循环
             _muteDepth++;
             el.setAttribute(attr, el.__gt_orig_attrs[attr]);
             delete el.__gt_orig_attrs[attr];
@@ -853,107 +716,81 @@ async function flushQueue() {
   } finally {
     translating = false;
 
-    // 清理 __gtRaw 快照，防止长期运行的 SPA 页面内存泄漏
-    for (const node of allNodes) {
-      delete node.__gtRaw;
-    }
+    allNodes.forEach(n => delete n.__gtRaw);
 
-    // 诊断输出
     _diagLog();
 
-    // 错误横幅
     if (diag.apiErrors.length > 0 && diag.translated === 0) {
-      var uniqueErrors = [];
-      var seen = {};
-      for (var ei = 0; ei < diag.apiErrors.length; ei++) {
-        var err = diag.apiErrors[ei];
-        if (!seen[err]) { seen[err] = true; uniqueErrors.push(err); }
-      }
-      showErrorBanner('翻译接口全部失败: ' + uniqueErrors.slice(0, 2).join('; '));
-    } else if (diag.translated > 0 && _errorBanner) {
-      _errorBanner.remove();
-      _errorBanner = null;
-    }
+      showErrorBanner('翻译接口全部失败: ' + [...new Set(diag.apiErrors)].slice(0, 2).join('; '));
+    } else if (diag.translated > 0 && _errorBanner) { _errorBanner.remove(); _errorBanner = null; }
 
-    // HI-2: 重新统计实际翻译数 — translatedCount 可能因异步 apply 而不准确
-    // 通过 origTextMap（文本节点）和 translatedAttrs（属性）的条目数来精确计数
-    var actualTranslated = translatedCount;
-    // If manual flush resolvers exist, compute a more accurate count from the state maps
-
-    // 通知 UI 状态更新
-    if (translatedCount > 0) {
-      notifyTranslatedState(true);
-    }
+    if (translatedCount > 0) notifyTranslatedState(true);
 
     // Resolve all manual flush waiters so each message handler gets the actual count
-    if (_manualFlushResolvers.length > 0) {
-      const rs = _manualFlushResolvers; _manualFlushResolvers = [];
-      // HI-2: 使用更准确的翻译计数 — 综合 translatedCount 和 _incrementalApplied
-      // 额外检查：如果 translatedCount 为0但有翻译成功（通过 origTextMap 条目数判断），
-      // 至少确保通知 UI 发生了翻译
-      var reportedCount = translatedCount + _incrementalApplied;
-      // 兜底：如果计数器显示为0，但 origTextMap 有数据，说明翻译确实成功了
-      if (reportedCount === 0) reportedCount = _incrementalApplied;
+    if (_flR.length > 0) {
+      const rs = _flR; _flR = [];
+      var reportedCount = translatedCount + _iA;
+      if (reportedCount === 0) reportedCount = _iA;
       for (const r of rs) r(reportedCount);
     }
 
     // If more nodes accumulated while we were busy, flush again
-    if (translationMode !== 'off' && queue.size > 0) scheduleFlush();
+    if (tMode !== 'off' && queue.size > 0) scheduleFlush();
   }
 
-  return { success: true, count: translatedCount + _incrementalApplied };
+  return { success: true, count: translatedCount + _iA };
 }
-
-// ─────────────────────────────────────────────
-// restore
-// ─────────────────────────────────────────────
 
 function restorePage() {
   if (!document.body) return 0;
-  translationMode = 'off';
+  tMode = 'off';
   clearPendingWork();
   stopObserver();
   _flushGen++;
-  _inflightBatches = {};
-  _incrementalApplied = 0;
+  _iF = {};
+  _iA = 0;
 
-  if (_manualFlushResolvers.length > 0) {
-    const rs = _manualFlushResolvers; _manualFlushResolvers = [];
+  if (_flR.length > 0) {
+    const rs = _flR; _flR = [];
     for (const r of rs) r(0);
   }
 
   var restoredCount = 0;
 
   // Single-pass tree walk: collect text nodes and elements together
-  var textNodes = [];
-  var elements = [];
-  collectBoth(document.body, textNodes, elements);
+  var textNodes = [], elements = []; _coll(document.body, textNodes, elements);
 
-  // Global mute — suppress observer for the entire restore
+  // Global mute 鈥?suppress observer for the entire restore
   _muteDepth++;
   try {
-    for (var ti = 0; ti < textNodes.length; ti++) {
-      var node = textNodes[ti];
-      if (node.__gt_orig !== undefined) {
-        node.textContent = node.__gt_orig;
-        delete node.__gt_orig;
-        restoredCount++;
+    // Remove translation spans and restore hidden originals
+    var transSpans = document.querySelectorAll('[data-jiyi-translation]');
+    transSpans.forEach(s => { try { s.remove(); } catch (_) { } });
+    var hiddenCopies = document.querySelectorAll('[data-jiyi-hidden]');
+    hiddenCopies.forEach(hc => {
+      if (hc.__gtOrigNode) {
+        try { hc.parentElement.insertBefore(hc.__gtOrigNode, hc); hc.remove(); restoredCount++; } catch (_) { }
       }
+    });
+
+    textNodes.forEach(node => {
+      if (node.__gt_orig !== undefined) { node.textContent = node.__gt_orig; delete node.__gt_orig; restoredCount++; }
+    });
+
+    var titleEl = document.querySelector('title');
+    if (titleEl && titleEl.firstChild && titleEl.firstChild.__gt_orig !== undefined) {
+      titleEl.firstChild.textContent = titleEl.firstChild.__gt_orig;
+      delete titleEl.firstChild.__gt_orig;
+      restoredCount++;
     }
 
-    for (var ei = 0; ei < elements.length; ei++) {
-      var el = elements[ei];
+    elements.forEach(el => {
       if (el.__gt_orig_attrs) {
-        for (var attr in el.__gt_orig_attrs) {
-          if (el.__gt_orig_attrs.hasOwnProperty(attr)) {
-            el.setAttribute(attr, el.__gt_orig_attrs[attr]);
-            restoredCount++;
-          }
-        }
+        Object.keys(el.__gt_orig_attrs).forEach(attr => { el.setAttribute(attr, el.__gt_orig_attrs[attr]); restoredCount++; });
         delete el.__gt_orig_attrs;
         if (translatedAttrs.has(el)) translatedAttrs.delete(el);
       }
-    }
+    });
   } finally {
     _muteDepth--;
   }
@@ -963,7 +800,7 @@ function restorePage() {
   translatedAttrs = new WeakMap();
   cache.clear();
   seenText.clear();
-  observedShadows = new WeakSet();
+  _oS = new WeakSet();
 
   return restoredCount;
 }
@@ -976,65 +813,49 @@ function notifyTranslatedState(translated) {
   }).catch(() => { });
 }
 
-function _handleExtensionGone() {
-  if (translationMode === 'off') return;
-  LOG('扩展上下文失效，停止翻译并恢复页面');
-  translationMode = 'off';
+function _stopAndRestore() {
+  tMode = 'off';
   clearPendingWork();
   stopObserver();
   restorePage();
   notifyTranslatedState(false);
 }
 
-async function translatePage(mode) {
+function _handleExtensionGone() {
+  if (tMode === 'off') return;
+    LOG_API('扩展上下文失效，停止翻译并恢复页面');
+  _stopAndRestore();
+}
+
+async function translatePage(mode, skipHydration) {
   if (translating) {
     if (mode === 'manual') return { skipped: true, reason: 'busy' };
     // auto-mode SPA re-entry: abort in-flight translations so they don't
     // overwrite the restored page with stale results, and release the
     // translating lock so the new scan can start immediately
     _flushGen++;
-  _inflightBatches = {};
-  _incrementalApplied = 0;
+    _iF = {};
+    _iA = 0;
     translating = false;
     clearPendingWork();
   }
 
   LOG(`translatePage 启动, mode=${mode}`);
   _diagReset();
-  _incrementalApplied = 0;
-  translationMode = mode;
+  _iA = 0;
+  tMode = mode;
   startObserver();
   LOG('  Observer 已启动');
 
-  // scanInitial 通过 requestIdleCallback 延迟执行，不阻塞页面渲染
-  // 扫描完成后内部调用 scheduleFlush 触发翻译
-  scanInitial();
+  scanInitial(skipHydration);
   LOG('  初始扫描已调度（requestIdleCallback），翻译将在浏览器空闲时启动');
 
-  // 手动模式：返回一个 Promise，flushQueue 完成时 resolve 实际翻译数
-  // 每次调用都注册独立的 resolver，避免并发调用覆盖同一个 Promise
-  if (mode === 'manual') {
-    return new Promise(function (r) {
-      _manualFlushResolvers.push(r);
-    }).then(function (count) { return { success: true, count: count }; });
-  }
+  if (mode === 'manual') return new Promise(r => { _flR.push(r); }).then(count => ({ success: true, count }));
 
   return { success: true, count: 0 };
 }
 
-function collectTextNodes(root, out) {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  while (walker.nextNode()) out.push(walker.currentNode);
-  for (const sr of shadowRootsIn(root)) collectTextNodes(sr, out);
-}
-
-function collectElements(root, out) {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
-  while (walker.nextNode()) out.push(walker.currentNode);
-  for (const sr of shadowRootsIn(root)) collectElements(sr, out);
-}
-
-function collectBoth(root, textOut, elOut) {
+function _coll(root, textOut, elOut) {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
   while (walker.nextNode()) {
     const n = walker.currentNode;
@@ -1047,42 +868,18 @@ function collectBoth(root, textOut, elOut) {
   for (const sr of shadowRootsIn(root)) collectBoth(sr, textOut, elOut);
 }
 
-// ─────────────────────────────────────────────
-// message handler
-// ─────────────────────────────────────────────
-
 chrome.runtime.onMessage.addListener((msg, _s, send) => {
 
   if (msg.action === 'translate_page') {
-    (async function () {
+    (async () => {
       try {
-        // 页面已是简体中文 → 无需翻译（用户可通过排除域名兜底覆盖）
-        if (isPageSimplifiedChinese()) {
-          LOG('手动翻译：页面为简体中文，跳过');
-          send({ success: true, count: 0, reason: 'already_chinese' });
-          return;
-        }
-
-        var result = await Promise.race([
-          translatePage('manual'),
-          new Promise(function (r) { setTimeout(function () { r({ success: false, reason: 'timeout' }); }, 30000); })
-        ]);
-        if (result?.skipped) {
-          send({ success: false, reason: 'busy' });
-          return;
-        }
-        if (result?.error) {
-          send({ success: false, reason: result.error });
-          return;
-        }
-        if (result?.success === false && result?.reason) {
-          send({ success: false, reason: result.reason });
-          return;
-        }
+        if (isPageSimplifiedChinese()) { LOG_STATE('手动翻译：页面为简体中文，跳过'); send({ success: true, count: 0, reason: 'already_chinese' }); return; }
+        var result = await Promise.race([translatePage('manual'), new Promise(r => setTimeout(() => r({ success: false, reason: 'timeout' }), 30000))]);
+        if (result?.skipped) { send({ success: false, reason: 'busy' }); return; }
+        if (result?.error) { send({ success: false, reason: result.error }); return; }
+        if (result?.success === false && result?.reason) { send({ success: false, reason: result.reason }); return; }
         send({ success: true, count: result.count || 0 });
-      } catch (e) {
-        send({ success: false, reason: e?.message });
-      }
+      } catch (e) { send({ success: false, reason: e?.message }); }
     })();
     return true;
   }
@@ -1106,38 +903,36 @@ chrome.runtime.onMessage.addListener((msg, _s, send) => {
   }
 
   if (msg.action === 'save_logs') {
-    var logBlob = new Blob([msg.text], { type: 'text/plain;charset=utf-8' });
-    var logA = document.createElement('a');
+    var logBlob = new Blob([msg.text], { type: 'text/plain;charset=utf-8' }), logA = document.createElement('a');
     logA.href = URL.createObjectURL(logBlob);
     logA.download = msg.filename;
     document.body.appendChild(logA);
     logA.click();
-    setTimeout(function() { document.body.removeChild(logA); URL.revokeObjectURL(logA.href); }, 300);
+    setTimeout(() => { document.body.removeChild(logA); URL.revokeObjectURL(logA.href); }, 300);
     send({ success: true });
     return;
   }
 
-  // 流式翻译：后台分批推送各引擎的译文
   if (msg.action === 'apply_translation') {
     var grpId = msg.groupId;
     if (grpId === undefined || grpId === null) return;
-    var inf = _inflightBatches[grpId];
+    var inf = _iF[grpId];
     if (!inf) return;
-    if (inf.gen !== _flushGen || translationMode === 'off') {
-      delete _inflightBatches[grpId];
+    if (inf.gen !== _flushGen || tMode === 'off') {
+      delete _iF[grpId];
       return;
     }
     if (!msg.translation) return;
 
-    var partialPairs = _applyTranslationResult(inf.batch, msg.translation, inf.isSolo);
+    var partialPairs = _applyTr(inf.batch, msg.translation, inf.isSolo);
     inf.applied += partialPairs.length;
 
     if (inf.applied >= inf.total) {
       var elapsed = performance.now() - inf.t0;
       _dbg('batch_done', { seq: inf.seq, count: inf.applied, elapsed: elapsed, engine: 'dual' });
       diag.translated += inf.applied;
-      _incrementalApplied += inf.applied;
-      delete _inflightBatches[grpId];
+      _iA += inf.applied;
+      delete _iF[grpId];
     }
     return;
   }
@@ -1148,78 +943,66 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes.excludedDomains) {
     _excludedDomains = changes.excludedDomains.newValue || [];
     const host = window.location.hostname || '';
-    if (_excludedDomains.indexOf(host) !== -1 && translationMode !== 'off') {
-      translationMode = 'off';
-      clearPendingWork();
-      stopObserver();
-      restorePage();
-      notifyTranslatedState(false);
+    if (_isDomainExcluded(host) && tMode !== 'off') {
+      _stopAndRestore();
     }
     return;
   }
 
   if (area !== 'sync' || !changes.autoTranslate) return;
 
-  if (
-    changes.autoTranslate.newValue === false &&
-    translationMode === 'auto'
-  ) {
-    translationMode = 'off';
-    clearPendingWork();
-    stopObserver();
-    restorePage();
-    notifyTranslatedState(false);
+  if (changes.autoTranslate.newValue === false && tMode === 'auto') {
+    _stopAndRestore();
+  } else if (changes.autoTranslate.newValue === true && tMode === 'off') {
+    var host = window.location.hostname || '';
+    if (_isDomainExcluded(host)) return;
+    if (typeof isPageSimplifiedChinese === 'function' && isPageSimplifiedChinese()) return;
+    translatePage('auto').catch(e => ERR('autoTranslate re-enable fails:', e?.message));
   }
 });
 
-// ─────────────────────────────────────────────
-// init
-// ─────────────────────────────────────────────
-
-// Keep service worker alive during translation
+// SPA 导航检测
 if (isAlive()) {
   try {
     var keepAlivePort = chrome.runtime.connect({ name: 'keepAlive' });
-    keepAlivePort.onDisconnect.addListener(function () {
-      chrome.runtime.lastError;
-      if (!isAlive()) _handleExtensionGone();
-    });
+    keepAlivePort.onDisconnect.addListener(() => { chrome.runtime.lastError; if (!isAlive()) _handleExtensionGone(); });
   } catch (_) { }
 }
 
-// ── SPA 导航检测 ──
-// 问题: tabs.onUpdated 只响应 status==='loading'，SPA 路由切换不触发
-// 导致: tab 状态/右键菜单错误，新 DOM 节点的还原功能失效
-(function setupSPADetection() {
-  var spaDebounce = null;
-  var lastSpaUrl = location.href;
+var spaDebounce = null, lastSpaUrl = location.href;
 
-  function onSpaNavigate() {
+function onSpaNavigate() {
     if (location.href === lastSpaUrl) return;
     lastSpaUrl = location.href;
-    LOG('SPA 导航检测: ' + lastSpaUrl);
+        LOG_DOM('SPA 导航检测 ' + lastSpaUrl);
 
-    var prevMode = translationMode;
+    var prevMode = tMode;
     if (prevMode === 'off') return;
 
-    // 重置翻译状态
-    restorePage();
+    _flushGen++;
+    _iF = {};
+    _iA = 0;
+    clearPendingWork();
+    stopObserver();
+    origTextMap = new WeakMap();
+    origAttrMap = new WeakMap();
+    translatedAttrs = new WeakMap();
+    seenText.clear();
+    _oS = new WeakSet();
     notifyTranslatedState(false);
 
-    // 自动模式：检查排除域名 + 中文后重新翻译
     if (prevMode === 'auto') {
       var newDomain = location.hostname || '';
-      if (_excludedDomains.indexOf(newDomain) !== -1) {
-        LOG('SPA：域名已排除，跳过:', newDomain);
+      if (_isDomainExcluded(newDomain)) {
+            LOG_STATE('SPA：域名已排除，跳过', newDomain);
         return;
       }
       if (typeof isPageSimplifiedChinese === 'function' && isPageSimplifiedChinese()) {
-        LOG('SPA：页面为简体中文，跳过翻译');
+            LOG_STATE('SPA：页面为简体中文，跳过翻译');
         return;
       }
-      translatePage('auto');
+      translatePage('auto', true).catch(e => ERR('SPA translatePage fails:', e?.message));
     }
-    // 手动模式：保持关闭，用户需手动触发
   }
 
   function handleSpaUrlChange() {
@@ -1227,7 +1010,6 @@ if (isAlive()) {
     spaDebounce = setTimeout(onSpaNavigate, 100);
   }
 
-  // 拦截 history.pushState / replaceState
   var origPushState = history.pushState;
   history.pushState = function () {
     origPushState.apply(this, arguments);
@@ -1239,16 +1021,12 @@ if (isAlive()) {
     handleSpaUrlChange();
   };
 
-  // 监听 popstate（浏览器前进/后退按钮）
   window.addEventListener('popstate', handleSpaUrlChange);
-
-  // 监听 hashchange（hash 路由 SPA 如 #/page1 → #/page2）
   window.addEventListener('hashchange', handleSpaUrlChange);
-})();
 
 (async function init() {
 
-  LOG('content.js 初始化开始...');
+  LOG('content.js 初始化开始..');
 
   if (!document.body) {
     LOG('等待 document.body...');
@@ -1257,7 +1035,6 @@ if (isAlive()) {
     });
   }
 
-  // 加载排除域名：从 chrome.storage.local 读取（安装时由 background 从 excluded-domains.json 种子写入）
   const domain = window.location.hostname || '';
 
   const settings = await new Promise(r =>
@@ -1270,7 +1047,6 @@ if (isAlive()) {
     _excludedDomains = settings.excludedDomains;
   }
 
-  // 额外读取 autoTranslate 设置
   const autoSettings = await new Promise(r =>
     chrome.storage.sync.get(['autoTranslate'], r)
   );
@@ -1278,25 +1054,24 @@ if (isAlive()) {
 
   LOG('排除域名列表:', excludedDomains);
 
-  if (excludedDomains.indexOf(domain) !== -1) {
-    LOG('域名已排除，跳过:', domain);
+  if (_isDomainExcluded(domain)) {
+    LOG_STATE('域名已排除，跳过:', domain);
     return;
   }
 
-  // 页面已是简体中文 → 无需翻译（排除域名功能作为自定义兜底）
   if (isPageSimplifiedChinese()) {
-    LOG('页面为简体中文，跳过翻译');
+    LOG_STATE('页面为简体中文，跳过翻译');
     return;
   }
 
   LOG('autoTranslate 设置:', settings.autoTranslate);
 
   if (settings.autoTranslate === false) {
-    LOG('自动翻译已关闭，跳过');
+    LOG_STATE('自动翻译已关闭，跳过');
     return;
   }
 
-  translatePage('auto');
+  translatePage('auto').catch(e => ERR('init translatePage fails:', e?.message));
   LOG('初始化完成');
 
 })()

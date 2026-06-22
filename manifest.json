@@ -14,7 +14,9 @@
   "host_permissions": [
     "<all_urls>",
     "https://api.cognitive.microsofttranslator.com/*",
-    "https://edge.microsoft.com/*"
+    "https://edge.microsoft.com/*",
+    "https://tmt.tencentcloudapi.com/*",
+    "https://api.cloudflare.com/*"
   ],
   "background": {
     "service_worker": "background.js",
@@ -55,7 +57,8 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "icons/*"
+        "icons/*",
+        "pretranslate-hook.js"
       ],
       "matches": [
         "<all_urls>"
