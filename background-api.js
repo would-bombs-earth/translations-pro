@@ -17,9 +17,9 @@ export const MARK_R = '\u27EB';
 
 const _apiBuf = [];
 const _apiBufMax = 500;
-const _S_API     = 'background:#0891b2;color:#fff;padding:1px 7px;border-radius:3px;font-weight:600';
+const _S_API = 'background:#0891b2;color:#fff;padding:1px 7px;border-radius:3px;font-weight:600';
 const _S_API_ERR = 'background:#ef4444;color:#fff;padding:1px 7px;border-radius:3px;font-weight:600';
-const _S_TS      = 'color:#6b7280;font-weight:normal';
+const _S_TS = 'color:#6b7280;font-weight:normal';
 function _apiLog(method, tag, a) {
     const ts = new Date().toISOString().slice(11, 23);
     const badge = tag === 'E' ? _S_API_ERR : _S_API;
@@ -413,6 +413,104 @@ async function translateViaGoogle(texts, sl) {
     await Promise.all(workers);
 
     return { translations: translations };
+}
+
+// ═══════════════════════════════════════════════════════════
+// 单词词典查询 — 获取翻译 + 词性标注
+// ═══════════════════════════════════════════════════════════
+
+export async function lookupWord(text) {
+    var clean = sanitizeText(text.trim());
+    if (!clean || !/^[a-zA-Z-]+$/.test(clean) || clean.length > 40) {
+        return { translation: '', dict: null };
+    }
+
+    var url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh-CN&dt=t&dt=bd&q=' + encodeURIComponent(clean);
+
+    for (var retry = 0; retry < 2; retry++) {
+        try {
+            var res = await fetch(url);
+            if (res.status === 429) {
+                if (retry < 1) { await new Promise(function (r) { setTimeout(r, 300); }); continue; }
+                return { translation: '', dict: null };
+            }
+            if (!res.ok) {
+                if (retry < 1) { await new Promise(function (r) { setTimeout(r, 150); }); continue; }
+                return { translation: '', dict: null };
+            }
+            var raw = await res.text();
+            var data = JSON.parse(raw);
+
+            // Extract translation
+            var translation = '';
+            if (Array.isArray(data) && Array.isArray(data[0])) {
+                for (var j = 0; j < data[0].length; j++) {
+                    if (Array.isArray(data[0][j]) && data[0][j][0]) translation += data[0][j][0];
+                }
+            }
+
+            // Extract dictionary / POS data
+            var dict = null;
+            if (Array.isArray(data)) {
+                for (var di = 0; di < data.length; di++) {
+                    var section = data[di];
+                    if (!Array.isArray(section) || section.length === 0) continue;
+                    var firstEntry = section[0];
+                    if (!Array.isArray(firstEntry) || typeof firstEntry[0] !== 'string') continue;
+                    if (firstEntry[0].toLowerCase() !== clean.toLowerCase()) continue;
+                    // Find POS sub-array within the entry (try indices 5-8)
+                    var posList = null;
+                    for (var ei = 5; ei <= 8; ei++) {
+                        if (Array.isArray(firstEntry[ei]) && firstEntry[ei].length > 0 &&
+                            Array.isArray(firstEntry[ei][0]) && typeof firstEntry[ei][0][0] === 'string') {
+                            posList = firstEntry[ei];
+                            break;
+                        }
+                    }
+                    if (!posList) continue;
+                    dict = [];
+                    for (var pi = 0; pi < posList.length; pi++) {
+                        if (Array.isArray(posList[pi]) && typeof posList[pi][0] === 'string' && Array.isArray(posList[pi][1])) {
+                            dict.push({ pos: posList[pi][0], meanings: posList[pi][1].slice(0, 5) });
+                        }
+                    }
+                    if (dict.length === 0) dict = null;
+                    break;
+                }
+            }
+
+            return { translation: translation || clean, dict: dict };
+        } catch (e) {
+            if (retry >= 1) return { translation: '', dict: null };
+            await new Promise(function (r) { setTimeout(r, 100); });
+        }
+    }
+    return { translation: '', dict: null };
+}
+
+// ═══════════════════════════════════════════════════════════
+// 轻量划词翻译 — 绕过 google() 全量流水线，直接 fetch
+// ═══════════════════════════════════════════════════════════
+export async function quickTranslate(text) {
+    var clean = sanitizeText(text);
+    if (!clean) return { translation: '', engine: 'google' };
+
+    var url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh-CN&dt=t&q=' + encodeURIComponent(clean);
+    try {
+        var res = await fetch(url);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        var raw = await res.text();
+        var data = JSON.parse(raw);
+        var translation = '';
+        if (Array.isArray(data) && Array.isArray(data[0])) {
+            for (var j = 0; j < data[0].length; j++) {
+                if (Array.isArray(data[0][j]) && data[0][j][0]) translation += data[0][j][0];
+            }
+        }
+        return { translation: translation || clean, engine: 'google' };
+    } catch (e) {
+        return { translation: '', engine: 'google' };
+    }
 }
 
 // ═══════════════════════════════════════════════════════════

@@ -2,7 +2,7 @@
 // Service Worker — 右键菜单 / 标签状态 / 消息路由
 // 翻译 API 逻辑在 background-api.js
 
-import { google, pingBoth, getApiLogs } from './background-api.js';
+import { google, pingBoth, getApiLogs, lookupWord, quickTranslate } from './background-api.js';
 import { kvGetDomains, kvPutDomains, getKvLogs } from './kv-sync.js';
 
 // ── 控制台样式 ──
@@ -286,6 +286,22 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
         safeSend({ error: e?.message || String(e) });
       });
 
+    return true;
+  }
+
+  // 单词查询（含词性标注）
+  if (req.type === 'translate_word') {
+    lookupWord(req.text || '')
+      .then(r => safeSend(r))
+      .catch(e => safeSend({ error: e.message }));
+    return true;
+  }
+
+  // 划词短语翻译（轻量，绕过 google() 全量流水线）
+  if (req.type === 'sel_translate') {
+    quickTranslate(req.text || '')
+      .then(r => safeSend(r))
+      .catch(e => safeSend({ error: e.message }));
     return true;
   }
 

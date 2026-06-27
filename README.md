@@ -68,11 +68,20 @@
 
 在**排除域名列表**中的页面（或关闭自动翻译后），选中任意外文文本，会弹出深色毛玻璃风格的翻译浮窗，显示：
 
-- 翻译结果
-- 词性标注（名词、动词等）
+- 翻译结果（英文单词直接显示词典释义，短语/句子走轻量翻译通道）
+- 词性标注（名词、动词、形容词等，附中文标签）
 - 回译对照
 
-按 `Esc` 键或点击浮窗外部即可关闭。
+**交互方式：**
+- 按 `Esc` 键关闭
+- 点击浮窗外部关闭
+- 滚动页面时自动关闭
+- 快速连续选词时自动丢弃旧请求，只显示最新结果
+
+**性能优化：**
+- 英文单词使用 Google 词典接口（`dt=t&dt=bd`），同时获取翻译和词性
+- 短语/句子使用轻量翻译通道（`quickTranslate`），跳过引擎选择、标记解析、分块等开销
+- 本地 LRU 缓存（最多 50 条），重复选词秒出结果
 
 ### 4. 引擎说明
 
@@ -191,7 +200,7 @@
 translations_pro/
 ├── manifest.json          # 扩展清单（Manifest V3）
 ├── background.js          # Service Worker：右键菜单、消息路由、状态管理、KV 同步
-├── background-api.js      # 翻译引擎核心：微软/Google API、缓存、并发调度
+├── background-api.js      # 翻译引擎核心：微软/Google API、缓存、并发调度、词典查询
 ├── kv-sync.js             # Cloudflare KV 同步：跨设备排除域名同步
 ├── content-globals.js     # 共享工具：日志、计数器、DOM 规则、参数配置
 ├── content-lang.js        # 语言检测：零依赖正则引擎、多语言识别
@@ -203,3 +212,13 @@ translations_pro/
 ├── icons/                 # 扩展图标（16/32/48/128）
 └── README.md              # 本说明文档
 ```
+
+### 划词翻译关键函数
+
+| 函数 | 文件 | 说明 |
+|------|------|------|
+| `setupSelectionTranslate()` | content.js | mouseup 监听、选词检测、消息发送 |
+| `showSelPopup()` | content.js | 毛玻璃弹窗创建/更新，支持原地刷新避免闪烁 |
+| `closeSelPopup()` | content.js | 关闭弹窗并清理事件监听 |
+| `lookupWord()` | background-api.js | Google 词典查询，返回翻译 + 词性标注 |
+| `quickTranslate()` | background-api.js | 轻量 Google 翻译，绕过全量流水线 |

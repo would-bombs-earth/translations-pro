@@ -4,6 +4,10 @@
 // manual flush promise (Fix 1+6: real count from translatePage)
 
 var _flR = [], _flushGen = 0, _iF = {}, _iA = 0, _skipInc = false;
+var _selPopup = null, _selOutsideHandler = null;
+var _selCache = new Map();
+var _SEL_CACHE_MAX = 50;
+var _selSeq = 0;
 
 // node processing
 
@@ -200,8 +204,8 @@ function scanInitial(skipHydration) {
   var hasHydration = skipHydration ? false : (
     !!document.querySelector('#__docusaurus,#__next,#___gatsby,#app,[data-reactroot],[data-react-class]') ||
     !!(window.__NEXT_DATA__ || window.__NUXT__ || window.__GATSBY__ || window.__REACT_DEVTOOLS_GLOBAL_HOOK__) ||
-    function() {
-      for (var s of document.querySelectorAll('script[src]')) if (/react|next|vue|angular|svelte|docusaurus|nuxt|gatsby/i.test(s.src||s.textContent||'')) return true;
+    function () {
+      for (var s of document.querySelectorAll('script[src]')) if (/react|next|vue|angular|svelte|docusaurus|nuxt|gatsby/i.test(s.src || s.textContent || '')) return true;
       return false;
     }()
   );
@@ -417,7 +421,7 @@ function _tryExtract(translation, item, pairs) {
   if (idx === -1) return;
   var before = idx > 0 ? translation[idx - 1] : '\n', after = translation[idx + idStr.length] || '';
   if (before !== MARK_L && before !== '[' && before !== '【' && before !== '\n' &&
-  after !== MARK_R && after !== ']' && after !== '】') return;
+    after !== MARK_R && after !== ']' && after !== '】') return;
   var tail = translation.slice(idx + idStr.length), breakPoints = [tail.indexOf(MARK_L), tail.indexOf('\n')].filter(p => p >= 0);
   var end = breakPoints.length ? Math.min.apply(null, breakPoints) : -1, snippet = (end >= 0 ? tail.slice(0, end) : tail).trim();
   if (!snippet || !snippet.length || !(cleaned = cleanTranslation(snippet))) return;
@@ -819,7 +823,7 @@ function _stopAndRestore() {
 
 function _handleExtensionGone() {
   if (tMode === 'off') return;
-    LOG_API('扩展上下文失效，停止翻译并恢复页面');
+  LOG_API('扩展上下文失效，停止翻译并恢复页面');
   _stopAndRestore();
 }
 
@@ -957,6 +961,231 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
 });
 
+// ── 划词翻译（排除域名 / 自动翻译关闭时生效）──
+
+function closeSelPopup() {
+  if (_selPopup) {
+    _selPopup.remove();
+    _selPopup = null;
+  }
+  if (_selOutsideHandler) {
+    document.removeEventListener('mousedown', _selOutsideHandler);
+    _selOutsideHandler = null;
+  }
+}
+
+var _POS_LABEL = { noun: '名词', verb: '动词', adjective: '形容词', adverb: '副词', preposition: '介词', conjunction: '连词', pronoun: '代词', interjection: '感叹词', article: '冠词' };
+
+function showSelPopup(rawText, transText, dictData) {
+  if (_selPopup) {
+    // Update existing popup content in-place — no flicker
+    var oldBod = _selPopup.querySelector('.__gt_bod');
+    if (oldBod) {
+      oldBod.textContent = transText;
+      oldBod.style.color = transText === '翻译中...' ? 'rgba(255,255,255,0.5)' :
+        transText.indexOf('翻译失败') === 0 ? '#f87171' : '#e8e8f0';
+    }
+    var oldSrc = _selPopup.querySelector('.__gt_src');
+    if (oldSrc) oldSrc.textContent = rawText;
+    var oldPos = _selPopup.querySelector('.__gt_pos');
+    if (oldPos) {
+      if (dictData && Array.isArray(dictData) && dictData.length > 0) {
+        oldPos.style.display = '';
+        oldPos.innerHTML = '';
+        for (var pi = 0; pi < dictData.length; pi++) {
+          var entry = dictData[pi];
+          if (!entry || !entry.pos || !entry.meanings) continue;
+          var pr = document.createElement('div');
+          pr.style.cssText = 'margin-top:4px;font-size:12px;line-height:1.5;';
+          var pt = document.createElement('span');
+          pt.style.cssText =
+            'display:inline-block;background:rgba(255,255,255,0.08);' +
+            'border-radius:4px;padding:0 6px;margin-right:6px;' +
+            'font-size:11px;color:rgba(255,255,255,0.5);';
+          pt.textContent = _POS_LABEL[entry.pos] || entry.pos;
+          pr.appendChild(pt);
+          var pm = document.createElement('span');
+          pm.style.cssText = 'color:rgba(255,255,255,0.7);';
+          pm.textContent = entry.meanings.join('、');
+          pr.appendChild(pm);
+          oldPos.appendChild(pr);
+        }
+      } else {
+        oldPos.style.display = 'none';
+      }
+    }
+    return;
+  }
+
+  var sel = window.getSelection();
+  if (!sel || !sel.rangeCount) return;
+  var rect = sel.getRangeAt(0).getBoundingClientRect();
+
+  var popup = document.createElement('div');
+  _selPopup = popup;
+
+  var isError = transText.indexOf('翻译失败') === 0;
+  var isLoading = transText === '翻译中...';
+
+  popup.style.cssText =
+    'position:fixed;z-index:2147483646;' +
+    'background:rgba(28,28,38,0.94);' +
+    'backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);' +
+    'border:1px solid rgba(255,255,255,0.08);' +
+    'border-radius:14px;padding:0;' +
+    'min-width:160px;max-width:440px;' +
+    'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans SC",sans-serif;' +
+    'font-size:13px;line-height:1.6;' +
+    'color:#e4e4ea;' +
+    'box-shadow:0 8px 40px rgba(0,0,0,0.55);' +
+    'overflow:hidden;pointer-events:auto;opacity:0;' +
+    'transition:opacity 0.12s ease-out;';
+
+  // Header
+  var hdr = document.createElement('div');
+  hdr.style.cssText =
+    'display:flex;align-items:center;justify-content:space-between;' +
+    'padding:6px 12px;background:rgba(255,255,255,0.03);' +
+    'border-bottom:1px solid rgba(255,255,255,0.05);' +
+    'font-size:11px;color:rgba(255,255,255,0.35);';
+  var lbl = document.createElement('span');
+  lbl.textContent = '极译';
+  var cls = document.createElement('span');
+  cls.textContent = '✕';
+  cls.style.cssText = 'cursor:pointer;opacity:0.4;padding:0 4px;font-size:11px;';
+  cls.onmouseenter = function () { cls.style.opacity = '1'; };
+  cls.onmouseleave = function () { cls.style.opacity = '0.4'; };
+  cls.onclick = closeSelPopup;
+  hdr.appendChild(lbl);
+  hdr.appendChild(cls);
+
+  // Body (translation)
+  var bod = document.createElement('div');
+  bod.className = '__gt_bod';
+  bod.style.cssText =
+    'padding:10px 14px 4px;word-break:break-word;white-space:pre-wrap;' +
+    'font-size:14px;color:' + (isError ? '#f87171' : isLoading ? 'rgba(255,255,255,0.5)' : '#e8e8f0') + ';';
+  bod.textContent = transText;
+
+  popup.appendChild(hdr);
+  popup.appendChild(bod);
+
+  // POS entries
+  var posWrap = document.createElement('div');
+  posWrap.className = '__gt_pos';
+  posWrap.style.cssText = 'padding:0 14px 6px;';
+  if (dictData && Array.isArray(dictData) && dictData.length > 0) {
+    for (var pi = 0; pi < dictData.length; pi++) {
+      var entry = dictData[pi];
+      if (!entry || !entry.pos || !entry.meanings) continue;
+      var pr = document.createElement('div');
+      pr.style.cssText = 'margin-top:4px;font-size:12px;line-height:1.5;';
+      var pt = document.createElement('span');
+      pt.style.cssText =
+        'display:inline-block;background:rgba(255,255,255,0.08);' +
+        'border-radius:4px;padding:0 6px;margin-right:6px;' +
+        'font-size:11px;color:rgba(255,255,255,0.5);';
+      pt.textContent = _POS_LABEL[entry.pos] || entry.pos;
+      pr.appendChild(pt);
+      var pm = document.createElement('span');
+      pm.style.cssText = 'color:rgba(255,255,255,0.7);';
+      pm.textContent = entry.meanings.join('、');
+      pr.appendChild(pm);
+      posWrap.appendChild(pr);
+    }
+  } else {
+    posWrap.style.display = 'none';
+  }
+  popup.appendChild(posWrap);
+
+  // Source
+  var src = document.createElement('div');
+  src.className = '__gt_src';
+  src.style.cssText =
+    'padding:6px 14px 10px;border-top:1px solid rgba(255,255,255,0.05);' +
+    'font-size:11px;color:rgba(255,255,255,0.3);word-break:break-word;';
+  src.textContent = rawText;
+
+  popup.appendChild(src);
+
+  // Position
+  var scrollX = window.scrollX || window.pageXOffset;
+  var scrollY = window.scrollY || window.pageYOffset;
+  var top = rect.bottom + scrollY + 6;
+  var left = rect.left + scrollX;
+
+  document.body.appendChild(popup);
+  requestAnimationFrame(function () { popup.style.opacity = '1'; });
+
+  var pw = popup.offsetWidth, ph = popup.offsetHeight;
+  var vw = window.innerWidth, vh = window.innerHeight;
+
+  if (left + pw > vw - 8) left = Math.max(8, vw - pw - 8);
+  if (left < 8) left = 8;
+  if (top + ph > vh - 8 && rect.top > ph + 16) top = rect.top + scrollY - ph - 6;
+  if (top < 8) top = 8;
+
+  popup.style.left = left + 'px';
+  popup.style.top = top + 'px';
+
+  // Close on outside click
+  _selOutsideHandler = function (e) {
+    if (!popup.contains(e.target)) closeSelPopup();
+  };
+  setTimeout(function () { document.addEventListener('mousedown', _selOutsideHandler); }, 0);
+}
+
+function setupSelectionTranslate() {
+  document.addEventListener('mouseup', function (e) {
+    if (_selPopup && _selPopup.contains(e.target)) return;
+    if (tMode !== 'off') return;
+    var sel = window.getSelection();
+    if (!sel || sel.isCollapsed) return;
+    var text = sel.toString().trim();
+    if (!text || text.length < 2 || text.length > 5000) return;
+
+    // Check local caches first
+    var hit = cacheGet(text) || _selCache.get(text);
+    if (hit) { showSelPopup(text, hit.translation, hit.dict || null); return; }
+
+    var isWord = /^[a-zA-Z-]+$/.test(text) && text.length < 40;
+    showSelPopup(text, '翻译中...');
+    var seq = ++_selSeq;
+    var msg = isWord
+      ? { type: 'translate_word', text: text }
+      : { type: 'sel_translate', text: text };
+    try {
+      chrome.runtime.sendMessage(msg).then(function (r) {
+        if (_selSeq !== seq) return;
+        if (!isAlive()) { closeSelPopup(); return; }
+        if (r && r.translation) {
+          showSelPopup(text, r.translation, r.dict || null);
+          if (_selCache.size >= _SEL_CACHE_MAX) _selCache.delete(_selCache.keys().next().value);
+          _selCache.set(text, { translation: r.translation, dict: r.dict || null });
+        } else {
+          showSelPopup(text, '翻译失败' + (r && r.error ? ': ' + r.error : ''));
+        }
+      }).catch(function (err) {
+        if (_selSeq !== seq) return;
+        if (!isAlive() || String(err).indexOf('Extension context invalidated') !== -1) { closeSelPopup(); return; }
+        showSelPopup(text, '翻译失败: ' + (err && err.message ? err.message : String(err)));
+      });
+    } catch (err) {
+      if (_selSeq !== seq) return;
+      if (!isAlive() || String(err).indexOf('Extension context invalidated') !== -1) { closeSelPopup(); return; }
+      showSelPopup(text, '翻译失败: ' + (err && err.message ? err.message : String(err)));
+    }
+  });
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') closeSelPopup();
+  });
+
+  document.addEventListener('scroll', function () {
+    if (_selPopup) closeSelPopup();
+  }, { passive: true });
+}
+
 // SPA 导航检测
 if (isAlive()) {
   try {
@@ -968,57 +1197,57 @@ if (isAlive()) {
 var spaDebounce = null, lastSpaUrl = location.href;
 
 function onSpaNavigate() {
-    if (location.href === lastSpaUrl) return;
-    lastSpaUrl = location.href;
-        LOG_DOM('SPA 导航检测 ' + lastSpaUrl);
+  if (location.href === lastSpaUrl) return;
+  lastSpaUrl = location.href;
+  LOG_DOM('SPA 导航检测 ' + lastSpaUrl);
 
-    var prevMode = tMode;
-    if (prevMode === 'off') return;
+  var prevMode = tMode;
+  if (prevMode === 'off') return;
 
-    _flushGen++;
-    _iF = {};
-    _iA = 0;
-    clearPendingWork();
-    stopObserver();
-    origTextMap = new WeakMap();
-    origAttrMap = new WeakMap();
-    translatedAttrs = new WeakMap();
-    seenText.clear();
-    _oS = new WeakSet();
-    notifyTranslatedState(false);
+  _flushGen++;
+  _iF = {};
+  _iA = 0;
+  clearPendingWork();
+  stopObserver();
+  origTextMap = new WeakMap();
+  origAttrMap = new WeakMap();
+  translatedAttrs = new WeakMap();
+  seenText.clear();
+  _oS = new WeakSet();
+  notifyTranslatedState(false);
 
-    if (prevMode === 'auto') {
-      var newDomain = location.hostname || '';
-      if (_isDomainExcluded(newDomain)) {
-            LOG_STATE('SPA：域名已排除，跳过', newDomain);
-        return;
-      }
-      if (typeof isPageSimplifiedChinese === 'function' && isPageSimplifiedChinese()) {
-            LOG_STATE('SPA：页面为简体中文，跳过翻译');
-        return;
-      }
-      translatePage('auto', true).catch(e => ERR('SPA translatePage fails:', e?.message));
+  if (prevMode === 'auto') {
+    var newDomain = location.hostname || '';
+    if (_isDomainExcluded(newDomain)) {
+      LOG_STATE('SPA：域名已排除，跳过', newDomain);
+      return;
     }
+    if (typeof isPageSimplifiedChinese === 'function' && isPageSimplifiedChinese()) {
+      LOG_STATE('SPA：页面为简体中文，跳过翻译');
+      return;
+    }
+    translatePage('auto', true).catch(e => ERR('SPA translatePage fails:', e?.message));
   }
+}
 
-  function handleSpaUrlChange() {
-    if (spaDebounce) clearTimeout(spaDebounce);
-    spaDebounce = setTimeout(onSpaNavigate, 100);
-  }
+function handleSpaUrlChange() {
+  if (spaDebounce) clearTimeout(spaDebounce);
+  spaDebounce = setTimeout(onSpaNavigate, 100);
+}
 
-  var origPushState = history.pushState;
-  history.pushState = function () {
-    origPushState.apply(this, arguments);
-    handleSpaUrlChange();
-  };
-  var origReplaceState = history.replaceState;
-  history.replaceState = function () {
-    origReplaceState.apply(this, arguments);
-    handleSpaUrlChange();
-  };
+var origPushState = history.pushState;
+history.pushState = function () {
+  origPushState.apply(this, arguments);
+  handleSpaUrlChange();
+};
+var origReplaceState = history.replaceState;
+history.replaceState = function () {
+  origReplaceState.apply(this, arguments);
+  handleSpaUrlChange();
+};
 
-  window.addEventListener('popstate', handleSpaUrlChange);
-  window.addEventListener('hashchange', handleSpaUrlChange);
+window.addEventListener('popstate', handleSpaUrlChange);
+window.addEventListener('hashchange', handleSpaUrlChange);
 
 (async function init() {
 
@@ -1049,6 +1278,7 @@ function onSpaNavigate() {
   settings.autoTranslate = autoSettings.autoTranslate;
 
   LOG('排除域名列表:', excludedDomains);
+  setupSelectionTranslate();
 
   if (_isDomainExcluded(domain)) {
     LOG_STATE('域名已排除，跳过:', domain);
