@@ -481,24 +481,35 @@ export async function lookupWord(text) {
 // ═══════════════════════════════════════════════════════════
 export async function quickTranslate(text) {
     var clean = sanitizeText(text);
-    if (!clean) return { translation: '', engine: 'google' };
+    if (!clean) return { translation: '' };
 
     var url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh-CN&dt=t&q=' + encodeURIComponent(clean);
-    try {
-        var res = await fetch(url);
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        var raw = await res.text();
-        var data = JSON.parse(raw);
-        var translation = '';
-        if (Array.isArray(data) && Array.isArray(data[0])) {
-            for (var j = 0; j < data[0].length; j++) {
-                if (Array.isArray(data[0][j]) && data[0][j][0]) translation += data[0][j][0];
+    for (var retry = 0; retry < 2; retry++) {
+        try {
+            var res = await fetch(url);
+            if (res.status === 429) {
+                if (retry < 1) { await new Promise(function (r) { setTimeout(r, 300); }); continue; }
+                return { translation: '' };
             }
+            if (!res.ok) {
+                if (retry < 1) { await new Promise(function (r) { setTimeout(r, 150); }); continue; }
+                return { translation: '' };
+            }
+            var raw = await res.text();
+            var data = JSON.parse(raw);
+            var translation = '';
+            if (Array.isArray(data) && Array.isArray(data[0])) {
+                for (var j = 0; j < data[0].length; j++) {
+                    if (Array.isArray(data[0][j]) && data[0][j][0]) translation += data[0][j][0];
+                }
+            }
+            return { translation: translation || clean };
+        } catch (e) {
+            if (retry >= 1) return { translation: '' };
+            await new Promise(function (r) { setTimeout(r, 100); });
         }
-        return { translation: translation || clean, engine: 'google' };
-    } catch (e) {
-        return { translation: '', engine: 'google' };
     }
+    return { translation: '' };
 }
 
 // ═══════════════════════════════════════════════════════════
