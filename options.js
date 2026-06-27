@@ -531,10 +531,6 @@ async function loadDomains() {
   } catch (_) { }
 }
 
-async function saveDomains() {
-  await chrome.storage.local.set({ excludedDomains: domains });
-}
-
 function renderDomains(filter) {
   domainCount.textContent = domains.length + ' 个域名';
   let list = domains;
@@ -600,24 +596,29 @@ async function addDomain(d) {
     showStatus('⚠️ 域名已存在', true);
     return;
   }
-  domains.push(d);
-  domains.sort();
-  await saveDomains();
-  renderDomains();
+  var newList = [...new Set([...domains, d])].sort();
   domainInput.value = '';
   domainClear.classList.remove('show');
-  chrome.runtime.sendMessage({ type: 'kv_put_domains', domains: domains }).then(resp => {
-    if (!resp?.ok) showStatus('⚠️ KV 上传失败: ' + (resp?.error || 'unknown'), true);
-  }).catch(() => { });
+  try {
+    const resp = await chrome.runtime.sendMessage({ type: 'kv_put_domains', domains: newList });
+    if (!resp?.ok) {
+      showStatus('⚠️ KV 上传失败: ' + (resp?.error || '服务器错误'), true);
+    }
+  } catch (e) {
+    showStatus('⚠️ KV 通讯失败: ' + (e?.message || '未知错误'), true);
+  }
 }
 
 async function removeDomain(d) {
-  domains = domains.filter(x => x !== d);
-  await saveDomains();
-  renderDomains();
-  chrome.runtime.sendMessage({ type: 'kv_put_domains', domains: domains }).then(resp => {
-    if (!resp?.ok) showStatus('⚠️ KV 上传失败: ' + (resp?.error || 'unknown'), true);
-  }).catch(() => { });
+  var newList = domains.filter(x => x !== d);
+  try {
+    const resp = await chrome.runtime.sendMessage({ type: 'kv_put_domains', domains: newList });
+    if (!resp?.ok) {
+      showStatus('⚠️ KV 上传失败: ' + (resp?.error || '服务器错误'), true);
+    }
+  } catch (e) {
+    showStatus('⚠️ KV 通讯失败: ' + (e?.message || '未知错误'), true);
+  }
 }
 
 domainAdd.addEventListener('click', () => addDomain(domainInput.value));

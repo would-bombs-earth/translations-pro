@@ -941,10 +941,23 @@ chrome.runtime.onMessage.addListener((msg, _s, send) => {
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes.excludedDomains) {
-    _excludedDomains = changes.excludedDomains.newValue || [];
+    const oldList = changes.excludedDomains.oldValue || [];
+    const newList = changes.excludedDomains.newValue || [];
+    _excludedDomains = newList;
     const host = window.location.hostname || '';
-    if (_isDomainExcluded(host) && tMode !== 'off') {
-      _stopAndRestore();
+    const h = host.replace(/^www\./, '');
+    const wasExcluded = oldList.some(function (d) { return d === host || d.replace(/^www\./, '') === h; });
+    const isExcluded = _isDomainExcluded(host);
+    if (isExcluded) {
+      closeSelPopup();
+      if (tMode !== 'off') _stopAndRestore();
+    } else if (wasExcluded && !isExcluded && tMode === 'off') {
+      chrome.storage.sync.get(['autoTranslate'], function (r) {
+        if (r.autoTranslate !== false) {
+          if (typeof isPageSimplifiedChinese === 'function' && isPageSimplifiedChinese()) return;
+          translatePage('auto').catch(function (e) { ERR('exclusion removal re-enable fails:', e?.message); });
+        }
+      });
     }
     return;
   }
@@ -975,15 +988,25 @@ function closeSelPopup() {
 }
 
 var _POS_LABEL = { noun: '名词', verb: '动词', adjective: '形容词', adverb: '副词', preposition: '介词', conjunction: '连词', pronoun: '代词', interjection: '感叹词', article: '冠词' };
+var _POS_COLORS = {
+  noun: { bg: 'rgba(59,130,246,0.15)', text: '#93c5fd' },
+  verb: { bg: 'rgba(16,185,129,0.15)', text: '#6ee7b7' },
+  adjective: { bg: 'rgba(245,158,11,0.15)', text: '#fcd34d' },
+  adverb: { bg: 'rgba(139,92,246,0.15)', text: '#c4b5fd' },
+  preposition: { bg: 'rgba(236,72,153,0.15)', text: '#f9a8d4' },
+  conjunction: { bg: 'rgba(6,182,212,0.15)', text: '#67e8f9' },
+  pronoun: { bg: 'rgba(20,184,166,0.15)', text: '#5eead4' },
+  interjection: { bg: 'rgba(239,68,68,0.15)', text: '#fca5a5' },
+  article: { bg: 'rgba(156,163,175,0.15)', text: '#d1d5db' },
+};
 
 function showSelPopup(rawText, transText, dictData) {
   if (_selPopup) {
-    // Update existing popup content in-place — no flicker
     var oldBod = _selPopup.querySelector('.__gt_bod');
     if (oldBod) {
       oldBod.textContent = transText;
-      oldBod.style.color = transText === '翻译中...' ? 'rgba(255,255,255,0.5)' :
-        transText.indexOf('翻译失败') === 0 ? '#f87171' : '#e8e8f0';
+      oldBod.style.color = transText === '翻译中...' ? 'rgba(255,255,255,0.4)' :
+        transText.indexOf('翻译失败') === 0 ? '#f87171' : '#f0f0f5';
     }
     var oldSrc = _selPopup.querySelector('.__gt_src');
     if (oldSrc) oldSrc.textContent = rawText;
@@ -996,16 +1019,18 @@ function showSelPopup(rawText, transText, dictData) {
           var entry = dictData[pi];
           if (!entry || !entry.pos || !entry.meanings) continue;
           var pr = document.createElement('div');
-          pr.style.cssText = 'margin-top:4px;font-size:12px;line-height:1.5;';
+          pr.style.cssText = 'display:flex;align-items:baseline;gap:8px;margin-top:6px;';
+          var colors = _POS_COLORS[entry.pos] || { bg: 'rgba(255,255,255,0.08)', text: 'rgba(255,255,255,0.6)' };
           var pt = document.createElement('span');
           pt.style.cssText =
-            'display:inline-block;background:rgba(255,255,255,0.08);' +
-            'border-radius:4px;padding:0 6px;margin-right:6px;' +
-            'font-size:11px;color:rgba(255,255,255,0.5);';
+            'display:inline-block;background:' + colors.bg + ';' +
+            'color:' + colors.text + ';' +
+            'border-radius:5px;padding:1px 8px;' +
+            'font-size:11px;font-weight:500;white-space:nowrap;';
           pt.textContent = _POS_LABEL[entry.pos] || entry.pos;
           pr.appendChild(pt);
           var pm = document.createElement('span');
-          pm.style.cssText = 'color:rgba(255,255,255,0.7);';
+          pm.style.cssText = 'color:rgba(255,255,255,0.65);font-size:13px;line-height:1.4;';
           pm.textContent = entry.meanings.join('、');
           pr.appendChild(pm);
           oldPos.appendChild(pr);
@@ -1029,66 +1054,71 @@ function showSelPopup(rawText, transText, dictData) {
 
   popup.style.cssText =
     'position:fixed;z-index:2147483646;' +
-    'background:rgba(28,28,38,0.94);' +
-    'backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);' +
-    'border:1px solid rgba(255,255,255,0.08);' +
-    'border-radius:14px;padding:0;' +
-    'min-width:160px;max-width:440px;' +
+    'background:rgba(22,22,30,0.96);' +
+    'backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);' +
+    'border:1px solid rgba(255,255,255,0.06);' +
+    'border-radius:16px;padding:16px;' +
+    'min-width:180px;max-width:420px;' +
     'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans SC",sans-serif;' +
-    'font-size:13px;line-height:1.6;' +
-    'color:#e4e4ea;' +
-    'box-shadow:0 8px 40px rgba(0,0,0,0.55);' +
+    'font-size:13px;line-height:1.5;' +
+    'color:#e0e0ea;' +
+    'box-shadow:0 12px 48px rgba(0,0,0,0.5);' +
     'overflow:hidden;pointer-events:auto;opacity:0;' +
-    'transition:opacity 0.12s ease-out;';
+    'transform:scale(0.94);' +
+    'transition:opacity 0.15s ease-out,transform 0.15s ease-out;';
 
-  // Header
-  var hdr = document.createElement('div');
-  hdr.style.cssText =
-    'display:flex;align-items:center;justify-content:space-between;' +
-    'padding:6px 12px;background:rgba(255,255,255,0.03);' +
-    'border-bottom:1px solid rgba(255,255,255,0.05);' +
-    'font-size:11px;color:rgba(255,255,255,0.35);';
-  var lbl = document.createElement('span');
-  lbl.textContent = '极译';
+  // Close button — top-right floating
   var cls = document.createElement('span');
   cls.textContent = '✕';
-  cls.style.cssText = 'cursor:pointer;opacity:0.4;padding:0 4px;font-size:11px;';
-  cls.onmouseenter = function () { cls.style.opacity = '1'; };
-  cls.onmouseleave = function () { cls.style.opacity = '0.4'; };
+  cls.style.cssText =
+    'position:absolute;top:11px;right:14px;cursor:pointer;' +
+    'opacity:0.25;font-size:14px;line-height:1;color:rgba(255,255,255,0.5);' +
+    'transition:opacity 0.15s;user-select:none;z-index:1;';
+  cls.onmouseenter = function () { cls.style.opacity = '0.7'; };
+  cls.onmouseleave = function () { cls.style.opacity = '0.25'; };
   cls.onclick = closeSelPopup;
-  hdr.appendChild(lbl);
-  hdr.appendChild(cls);
+  popup.appendChild(cls);
 
-  // Body (translation)
+  // Source text (original) — top, small, italic
+  var src = document.createElement('div');
+  src.className = '__gt_src';
+  src.style.cssText =
+    'font-size:11px;line-height:1.4;color:rgba(255,255,255,0.3);' +
+    'font-style:italic;margin-bottom:8px;padding-right:20px;word-break:break-word;';
+  src.textContent = rawText;
+  popup.appendChild(src);
+
+  // Translation body — hero
   var bod = document.createElement('div');
   bod.className = '__gt_bod';
   bod.style.cssText =
-    'padding:10px 14px 4px;word-break:break-word;white-space:pre-wrap;' +
-    'font-size:14px;color:' + (isError ? '#f87171' : isLoading ? 'rgba(255,255,255,0.5)' : '#e8e8f0') + ';';
+    'font-size:15px;font-weight:500;line-height:1.5;' +
+    'word-break:break-word;white-space:pre-wrap;' +
+    'color:' + (isError ? '#f87171' : isLoading ? 'rgba(255,255,255,0.4)' : '#f0f0f5') + ';';
   bod.textContent = transText;
-
-  popup.appendChild(hdr);
   popup.appendChild(bod);
 
-  // POS entries
+  // POS entries — colored pills
   var posWrap = document.createElement('div');
   posWrap.className = '__gt_pos';
-  posWrap.style.cssText = 'padding:0 14px 6px;';
+  posWrap.style.cssText = 'margin-top:10px;';
   if (dictData && Array.isArray(dictData) && dictData.length > 0) {
     for (var pi = 0; pi < dictData.length; pi++) {
       var entry = dictData[pi];
       if (!entry || !entry.pos || !entry.meanings) continue;
       var pr = document.createElement('div');
-      pr.style.cssText = 'margin-top:4px;font-size:12px;line-height:1.5;';
+      pr.style.cssText = 'display:flex;align-items:baseline;gap:8px;margin-top:6px;';
+      var colors = _POS_COLORS[entry.pos] || { bg: 'rgba(255,255,255,0.08)', text: 'rgba(255,255,255,0.6)' };
       var pt = document.createElement('span');
       pt.style.cssText =
-        'display:inline-block;background:rgba(255,255,255,0.08);' +
-        'border-radius:4px;padding:0 6px;margin-right:6px;' +
-        'font-size:11px;color:rgba(255,255,255,0.5);';
+        'display:inline-block;background:' + colors.bg + ';' +
+        'color:' + colors.text + ';' +
+        'border-radius:5px;padding:1px 8px;' +
+        'font-size:11px;font-weight:500;white-space:nowrap;';
       pt.textContent = _POS_LABEL[entry.pos] || entry.pos;
       pr.appendChild(pt);
       var pm = document.createElement('span');
-      pm.style.cssText = 'color:rgba(255,255,255,0.7);';
+      pm.style.cssText = 'color:rgba(255,255,255,0.65);font-size:13px;line-height:1.4;';
       pm.textContent = entry.meanings.join('、');
       pr.appendChild(pm);
       posWrap.appendChild(pr);
@@ -1098,37 +1128,27 @@ function showSelPopup(rawText, transText, dictData) {
   }
   popup.appendChild(posWrap);
 
-  // Source
-  var src = document.createElement('div');
-  src.className = '__gt_src';
-  src.style.cssText =
-    'padding:6px 14px 10px;border-top:1px solid rgba(255,255,255,0.05);' +
-    'font-size:11px;color:rgba(255,255,255,0.3);word-break:break-word;';
-  src.textContent = rawText;
-
-  popup.appendChild(src);
-
-  // Position
-  var scrollX = window.scrollX || window.pageXOffset;
-  var scrollY = window.scrollY || window.pageYOffset;
-  var top = rect.bottom + scrollY + 6;
-  var left = rect.left + scrollX;
+  // Position — viewport-relative
+  var top = rect.bottom + 6;
+  var left = rect.left;
 
   document.body.appendChild(popup);
-  requestAnimationFrame(function () { popup.style.opacity = '1'; });
+  requestAnimationFrame(function () {
+    popup.style.opacity = '1';
+    popup.style.transform = 'scale(1)';
+  });
 
   var pw = popup.offsetWidth, ph = popup.offsetHeight;
   var vw = window.innerWidth, vh = window.innerHeight;
 
-  if (left + pw > vw - 8) left = Math.max(8, vw - pw - 8);
-  if (left < 8) left = 8;
-  if (top + ph > vh - 8 && rect.top > ph + 16) top = rect.top + scrollY - ph - 6;
-  if (top < 8) top = 8;
+  if (left + pw > vw - 10) left = Math.max(10, vw - pw - 10);
+  if (left < 10) left = 10;
+  if (top + ph > vh - 10 && rect.top > ph + 16) top = rect.top - ph - 6;
+  if (top < 10) top = 10;
 
   popup.style.left = left + 'px';
   popup.style.top = top + 'px';
 
-  // Close on outside click
   _selOutsideHandler = function (e) {
     if (!popup.contains(e.target)) closeSelPopup();
   };
@@ -1139,6 +1159,7 @@ function setupSelectionTranslate() {
   document.addEventListener('mouseup', function (e) {
     if (_selPopup && _selPopup.contains(e.target)) return;
     if (tMode !== 'off') return;
+    if (_isDomainExcluded(location.hostname || '')) { closeSelPopup(); return; }
     var sel = window.getSelection();
     if (!sel || sel.isCollapsed) return;
     var text = sel.toString().trim();
@@ -1180,10 +1201,6 @@ function setupSelectionTranslate() {
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') closeSelPopup();
   });
-
-  document.addEventListener('scroll', function () {
-    if (_selPopup) closeSelPopup();
-  }, { passive: true });
 }
 
 // SPA 导航检测

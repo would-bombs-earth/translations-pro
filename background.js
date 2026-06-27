@@ -148,17 +148,22 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 });
 
 // ═══════════════════════════════════════════════════════════
-// CF KV 域名同步 — 自适应心跳
+// CF KV 域名同步 — 自适应心跳 (setTimeout 实现，支持亚分钟轮询)
 // ═══════════════════════════════════════════════════════════
 
-const KV_ALARM = 'kv_sync';
-const KV_FAST_SEC = 30;        // 快速轮询 30 秒
+const KV_FAST_SEC = 3;         // 快速轮询 3 秒
 const KV_SLEEP_SEC = 300;      // 休眠 5 分钟
 const KV_STABLE_LIMIT = 30;    // 连续 30 次无变化后休眠
 
 let _kvStableCount = 0;
 let _kvSleeping = false;
 let _kvSyncPromise = null;
+let _kvTimerId = null;
+
+function scheduleKvPoll(delaySec) {
+  if (_kvTimerId) clearTimeout(_kvTimerId);
+  _kvTimerId = setTimeout(onKvHeartbeat, delaySec * 1000);
+}
 
 async function syncDomainsFromKV() {
   if (_kvSyncPromise) return _kvSyncPromise;
@@ -171,16 +176,10 @@ async function syncDomainsFromKV() {
       const valid = cloudDomains.filter(d => typeof d === 'string' && d.includes('.')).sort();
       const r = await chrome.storage.local.get('excludedDomains');
       const local = Array.isArray(r.excludedDomains) ? r.excludedDomains.filter(d => typeof d === 'string' && d.includes('.')) : [];
-      // 合并：保留本地独有（本设备新增尚未同步到 KV），加入云端独有（其他设备新增）
-      const cloudSet = new Set(valid);
-      const merged = [...valid];
-      for (const d of local) {
-        if (!cloudSet.has(d)) merged.push(d);
-      }
-      merged.sort();
-      if (merged.length !== local.length || merged.some((d, i) => d !== local[i])) {
-        await chrome.storage.local.set({ excludedDomains: merged });
-        LOG('KV 同步: 域名列表已合并, 共 ' + merged.length + ' 个');
+      // 以云端为唯一来源：直接替换本地
+      if (valid.length !== local.length || valid.some((d, i) => d !== local[i])) {
+        await chrome.storage.local.set({ excludedDomains: valid });
+        LOG('KV 同步: 云端列表已同步到本地, 共 ' + valid.length + ' 个');
         return { changed: true, error: null };
       }
       return { changed: false, error: null };
@@ -196,12 +195,6 @@ async function syncDomainsFromKV() {
   }
 }
 
-async function setKvAlarm(periodSec) {
-  if (!chrome.alarms) return;
-  await chrome.alarms.clear(KV_ALARM);
-  chrome.alarms.create(KV_ALARM, { periodInMinutes: periodSec / 60 });
-}
-
 async function onKvHeartbeat() {
   const result = await syncDomainsFromKV();
 
@@ -209,7 +202,7 @@ async function onKvHeartbeat() {
     _kvSleeping = false;
     _kvStableCount = 0;
     LOG('KV 心跳: 休眠结束，恢复快速轮询 (' + KV_FAST_SEC + 's)');
-    await setKvAlarm(KV_FAST_SEC);
+    scheduleKvPoll(KV_FAST_SEC);
     return;
   }
 
@@ -219,24 +212,20 @@ async function onKvHeartbeat() {
     _kvSleeping = true;
     _kvStableCount = 0;
     LOG('KV 心跳: 连续' + KV_STABLE_LIMIT + '次无变化，休眠 ' + KV_SLEEP_SEC + 's');
-    await setKvAlarm(KV_SLEEP_SEC);
+    scheduleKvPoll(KV_SLEEP_SEC);
+  } else {
+    scheduleKvPoll(KV_FAST_SEC);
   }
 }
 
-if (chrome.alarms) {
-  chrome.alarms.onAlarm.addListener(alarm => {
-    if (alarm.name === KV_ALARM) onKvHeartbeat().catch(e => ERR('KV 心跳异常:', e?.message));
-  });
-}
-
-// 启动: 先同步一次，再开始快速轮询
+// 启动: 先同步一次，再开始快速轮询（无论同步是否成功都启动轮询）
 (async () => {
   try {
     await syncDomainsFromKV();
-    await setKvAlarm(KV_FAST_SEC);
   } catch (e) {
     ERR('KV 启动同步失败:', e?.message || String(e));
   }
+  scheduleKvPoll(KV_FAST_SEC);
 })();
 
 // ═══════════════════════════════════════════════════════════
@@ -322,10 +311,8 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   // KV 配置更新 → 重置心跳，立即同步
   if (req.type === 'kv_config_updated') {
     _kvStableCount = 0;
-    if (_kvSleeping) {
-      _kvSleeping = false;
-      setKvAlarm(KV_FAST_SEC);
-    }
+    _kvSleeping = false;
+    scheduleKvPoll(KV_FAST_SEC);
     syncDomainsFromKV().catch(e => ERR('kv_config_updated sync failed:', e?.message));
     safeSend({ ok: true });
     return false;
@@ -355,22 +342,21 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   // KV 域名同步
   if (req.type === 'kv_sync') {
     syncDomainsFromKV()
-      .then((result) => safeSend({ ok: true, changed: result.changed, error: result.error }))
+      .then((result) => safeSend({ ok: !result.error, changed: result.changed, error: result.error }))
       .catch(e => safeSend({ ok: false, error: e.message }));
     return true;
   }
 
   if (req.type === 'kv_put_domains') {
-    kvPutDomains(req.domains)
-      .then(async () => {
-        // PUT 成功 → 重置心跳计数，确保下次拉取立即可见
+    const domains = Array.isArray(req.domains) ? req.domains : [];
+    kvPutDomains(domains)
+      .then(() => {
         _kvStableCount = 0;
-        if (_kvSleeping) {
-          _kvSleeping = false;
-          await setKvAlarm(KV_FAST_SEC);
-        }
-        safeSend({ ok: true });
+        _kvSleeping = false;
+        scheduleKvPoll(KV_FAST_SEC);
+        return syncDomainsFromKV();
       })
+      .then(() => safeSend({ ok: true }))
       .catch(e => safeSend({ ok: false, error: e.message }));
     return true;
   }

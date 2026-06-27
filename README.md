@@ -11,13 +11,13 @@
 - **自动翻译**：打开外文网页时自动检测语言并翻译为简体中文，无需手动操作
 - **双引擎切换**：支持微软翻译（免费）和 Google 翻译（免费），自动故障转移
 - **原地 DOM 翻译**：直接替换页面文本节点和属性（title/alt/placeholder/aria-label），不依赖 iframe 或覆盖层
-- **划词翻译**：在排除域名或未自动翻译的页面上，选中文本即可弹出翻译浮窗，支持词性标注和回译
+- **划词翻译**：在排除域名或未自动翻译的页面上，选中文本即可弹出翻译浮窗，支持词性标注（名词/动词/形容词等分类彩色标签）和回译
 - **右键菜单**：页面任意位置右键 →「极译此页」/「恢复原文」，一键切换翻译状态
 - **SPA 适配**：自动检测 React/Vue/Angular/Next.js 等框架，延迟等待水合完成，监听路由变化重新翻译
 - **Shadow DOM 穿透**：支持 Web Components 内文本的翻译
-- **跨设备同步**：排除域名列表通过 Cloudflare KV 同步，多设备共享同一份配置
+- **跨设备同步**：排除域名列表通过 Cloudflare KV 同步（3s 快速轮询 + 5min 休眠），CF KV 为单一数据源
 - **配置导入导出**：KV 同步配置支持 JSON 文件导入/导出
-- **诊断日志**：内置环形缓冲日志系统，覆盖 Background / API / KV 三个模块，可一键导出
+- **诊断日志**：内置环形缓冲日志系统，覆盖 Content / Background / API / KV 四个模块，可一键导出
 
 ---
 
@@ -52,30 +52,30 @@
 
 ### 2. 控制面板
 
-点击工具栏图标打开 340px 宽的深色玻璃质感面板，包含以下模块：
+点击工具栏图标打开 340px 宽的深色面板，包含以下模块：
 
 | 模块 | 功能 |
 |------|------|
 | 自动翻译开关 | 开启/关闭页面自动翻译 |
 | 翻译此页 / 恢复原文 | 手动触发当前页面的翻译或恢复 |
-| 引擎选择 | 点击「微软翻译」或「Google 翻译」卡片切换引擎，延迟数据实时显示 |
+| 引擎选择 | 点击「微软翻译」或「Google 翻译」卡片切换引擎，延迟数据实时显示，附带官方品牌图标 |
 | 排除域名 | 添加/删除不自动翻译的域名，支持添加当前站点 |
-| Cloudflare KV 同步 | 填入 API Token / Account ID / Namespace ID，域名列表跨设备自动同步，带连通性状态指示 |
+| Cloudflare KV 同步 | 填入 API Token / Account ID / Namespace ID，域名列表跨设备自动同步，Cloudflare 官方图标，带连通性状态指示 |
 | KV 配置导入/导出 | KV 配置支持 JSON 文件导入/导出，方便备份和迁移 |
-| 导出日志 | 一键下载包含 Background、API、KV 三个模块的诊断日志 |
+| 导出日志 | 一键下载包含 Content、Background、API、KV 四个模块的诊断日志 |
 
 ### 3. 划词翻译
 
-在**排除域名列表**中的页面（或关闭自动翻译后），选中任意外文文本，会弹出深色毛玻璃风格的翻译浮窗，显示：
+在**排除域名列表**中的页面（或关闭自动翻译后），选中任意外文文本，会弹出深色翻译浮窗，显示：
 
 - 翻译结果（英文单词直接显示词典释义，短语/句子走轻量翻译通道）
-- 词性标注（名词、动词、形容词等，附中文标签）
+- 词性标注（名词、动词、形容词等，附彩色分类标签）
 - 回译对照
 
 **交互方式：**
 - 按 `Esc` 键关闭
 - 点击浮窗外部关闭
-- 滚动页面时自动关闭
+- 点击右上角 ✕ 按钮关闭
 - 快速连续选词时自动丢弃旧请求，只显示最新结果
 
 **性能优化：**
@@ -201,15 +201,15 @@ translations_pro/
 ├── manifest.json          # 扩展清单（Manifest V3）
 ├── background.js          # Service Worker：右键菜单、消息路由、状态管理、KV 同步
 ├── background-api.js      # 翻译引擎核心：微软/Google API、缓存、并发调度、词典查询
-├── kv-sync.js             # Cloudflare KV 同步：跨设备排除域名同步
+├── kv-sync.js             # Cloudflare KV 同步：跨设备排除域名同步（3s 轮询 + 5min 休眠）
 ├── content-globals.js     # 共享工具：日志、计数器、DOM 规则、参数配置
 ├── content-lang.js        # 语言检测：零依赖正则引擎、多语言识别
 ├── content.js             # 页面翻译：DOM 遍历、批量翻译、划词弹窗、SPA 适配
-├── debug.js               # 调试工具：控制台彩色日志
+├── debug.js               # 调试工具：控制台彩色批次日志
 ├── pretranslate-hook.js   # 预翻译 Hook：拦截 X/Twitter API 响应进行预翻译
-├── options.html           # 控制面板 UI（毛玻璃暗色风格、双引擎卡片）
+├── options.html           # 控制面板 UI（深色主题、引擎卡片带官方品牌图标）
 ├── options.js             # 控制面板逻辑：引擎切换、域名管理、配置导入/导出
-├── icons/                 # 扩展图标（16/32/48/128）
+├── icons/                 # 扩展图标（16/32/48/128 PNG）
 └── README.md              # 本说明文档
 ```
 
@@ -217,8 +217,8 @@ translations_pro/
 
 | 函数 | 文件 | 说明 |
 |------|------|------|
-| `setupSelectionTranslate()` | content.js | mouseup 监听、选词检测、消息发送 |
-| `showSelPopup()` | content.js | 毛玻璃弹窗创建/更新，支持原地刷新避免闪烁 |
+| `setupSelectionTranslate()` | content.js | mouseup 监听、选词检测、消息发送、排除域名检查 |
+| `showSelPopup()` | content.js | 深色弹窗创建/更新（浮动 ✕ 按钮、入场动画、词性彩色标签），支持原地刷新避免闪烁 |
 | `closeSelPopup()` | content.js | 关闭弹窗并清理事件监听 |
-| `lookupWord()` | background-api.js | Google 词典查询，返回翻译 + 词性标注 |
-| `quickTranslate()` | background-api.js | 轻量 Google 翻译，绕过全量流水线 |
+| `lookupWord()` | background-api.js | Google 词典查询（`dt=t&dt=bd`），返回翻译 + 词性标注数组 |
+| `quickTranslate()` | background-api.js | 轻量 Google 翻译，绕过全量流水线，含 429 重试 |
