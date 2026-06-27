@@ -450,33 +450,21 @@ export async function lookupWord(text) {
             }
 
             // Extract dictionary / POS data
+            // Google API: data[1] = dictionary entries
+            // Each entry: [pos_cn, [meanings], [synonyms], word, score]
             var dict = null;
-            if (Array.isArray(data)) {
-                for (var di = 0; di < data.length; di++) {
-                    var section = data[di];
-                    if (!Array.isArray(section) || section.length === 0) continue;
-                    var firstEntry = section[0];
-                    if (!Array.isArray(firstEntry) || typeof firstEntry[0] !== 'string') continue;
-                    if (firstEntry[0].toLowerCase() !== clean.toLowerCase()) continue;
-                    // Find POS sub-array within the entry (try indices 5-8)
-                    var posList = null;
-                    for (var ei = 5; ei <= 8; ei++) {
-                        if (Array.isArray(firstEntry[ei]) && firstEntry[ei].length > 0 &&
-                            Array.isArray(firstEntry[ei][0]) && typeof firstEntry[ei][0][0] === 'string') {
-                            posList = firstEntry[ei];
-                            break;
-                        }
-                    }
-                    if (!posList) continue;
-                    dict = [];
-                    for (var pi = 0; pi < posList.length; pi++) {
-                        if (Array.isArray(posList[pi]) && typeof posList[pi][0] === 'string' && Array.isArray(posList[pi][1])) {
-                            dict.push({ pos: posList[pi][0], meanings: posList[pi][1].slice(0, 5) });
-                        }
-                    }
-                    if (dict.length === 0) dict = null;
-                    break;
+            if (Array.isArray(data) && Array.isArray(data[1]) && data[1].length > 0) {
+                dict = [];
+                for (var di = 0; di < data[1].length; di++) {
+                    var entry = data[1][di];
+                    if (!Array.isArray(entry) || entry.length < 2) continue;
+                    var posLabel = entry[0];  // "名词", "动词", etc.
+                    var meanings = entry[1];  // ["炸弹","轰炸","弹"]
+                    if (typeof posLabel !== 'string' || !Array.isArray(meanings)) continue;
+                    if (meanings.length === 0) continue;
+                    dict.push({ pos: posLabel, meanings: meanings.slice(0, 5) });
                 }
+                if (dict.length === 0) dict = null;
             }
 
             return { translation: translation || clean, dict: dict };
