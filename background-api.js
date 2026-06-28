@@ -429,45 +429,39 @@ export async function lookupWord(text) {
         return { translation: '', dict: null };
     }
 
-    var transPromise = quickTranslate(clean);
-    var dictPromise = fetch('https://api.dictionaryapi.dev/api/v2/entries/en/' + encodeURIComponent(clean))
-        .then(function (res) {
-            if (!res.ok) return null;
-            return res.json();
-        })
-        .catch(function () { return null; });
+    try {
+        var pTranslate = quickTranslate(clean);
+        var pDict = fetch('https://dict.youdao.com/jsonapi?q=' + encodeURIComponent(clean))
+            .then(function(res) { return res.json(); })
+            .catch(function() { return null; });
 
-    var results = await Promise.all([transPromise, dictPromise]);
-    var transResult = results[0];
-    var dictData = results[1];
+        var results = await Promise.all([pTranslate, pDict]);
+        var tRes = results[0];
+        var dRes = results[1];
 
-    var translation = transResult ? transResult.translation : clean;
-    var dict = null;
-
-    if (Array.isArray(dictData) && dictData.length > 0) {
-        var entry = dictData[0];
-        if (Array.isArray(entry.meanings)) {
+        var dict = null;
+        if (dRes && dRes.ec && dRes.ec.word && dRes.ec.word[0] && dRes.ec.word[0].trs) {
             dict = [];
-            for (var i = 0; i < entry.meanings.length; i++) {
-                var m = entry.meanings[i];
-                var posLabel = m.partOfSpeech;
-                var meanings = [];
-                if (Array.isArray(m.definitions)) {
-                    for (var j = 0; j < Math.min(5, m.definitions.length); j++) {
-                        if (m.definitions[j].definition) {
-                            meanings.push(m.definitions[j].definition);
-                        }
+            var trs = dRes.ec.word[0].trs;
+            for (var i = 0; i < trs.length; i++) {
+                if (trs[i].tr && trs[i].tr[0] && trs[i].tr[0].l && trs[i].tr[0].l.i && trs[i].tr[0].l.i[0]) {
+                    var rawStr = trs[i].tr[0].l.i[0];
+                    // 有道返回的格式通常是 "n. 苹果" 或 "vt. 预订"
+                    var posMatch = rawStr.match(/^([a-zA-Z]+\.)\s*(.+)$/);
+                    if (posMatch) {
+                        dict.push({ pos: posMatch[1], meanings: [posMatch[2]] });
+                    } else {
+                        dict.push({ pos: "", meanings: [rawStr] });
                     }
-                }
-                if (meanings.length > 0) {
-                    dict.push({ pos: posLabel, meanings: meanings });
                 }
             }
             if (dict.length === 0) dict = null;
         }
-    }
 
-    return { translation: translation || clean, dict: dict };
+        return { translation: tRes.translation || clean, dict: dict };
+    } catch (e) {
+        return { translation: clean, dict: null };
+    }
 }
 
 // ═══════════════════════════════════════════════════════════
