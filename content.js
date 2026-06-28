@@ -1240,7 +1240,6 @@ function setupSelectionTranslate() {
   document.addEventListener('mouseup', function (e) {
     if (_selPopup && _selPopup.contains(e.target)) return;
     if (tMode !== 'off') return;
-    if (_isDomainExcluded(location.hostname || '')) { closeSelPopup(); return; }
     var sel = window.getSelection();
     if (!sel || sel.isCollapsed) return;
     var text = sel.toString().trim();
