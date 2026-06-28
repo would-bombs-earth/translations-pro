@@ -200,8 +200,8 @@ async function onKvHeartbeat() {
 
   if (_kvSleeping) {
     _kvSleeping = false;
-    _kvStableCount = 0;
-    LOG('KV 心跳: 休眠结束，恢复快速轮询 (' + KV_FAST_SEC + 's)');
+    _kvStableCount = result.changed ? 0 : 1;
+    LOG('KV 心跳: 休眠结束，恢复快速轮询 (' + KV_FAST_SEC + 's)', result.changed ? '有变化' : '无变化');
     scheduleKvPoll(KV_FAST_SEC);
     return;
   }
@@ -305,7 +305,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   // 腾讯云配置更新
   if (req.type === 'tencent_config_updated') {
     safeSend({ ok: true });
-    return false;
+    return;
   }
 
   // KV 配置更新 → 重置心跳，立即同步
@@ -315,20 +315,20 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     scheduleKvPoll(KV_FAST_SEC);
     syncDomainsFromKV().catch(e => ERR('kv_config_updated sync failed:', e?.message));
     safeSend({ ok: true });
-    return false;
+    return;
   }
 
   // 引擎选择变更
   if (req.type === 'engine_selected') {
     LOG('引擎切换:', req.engine);
     safeSend({ ok: true });
-    return false;
+    return;
   }
 
   // 导出日志 (合并 background + api + kv 缓冲)
   if (req.type === 'get_logs') {
     safeSend({ bg: getBgLogs(), api: getApiLogs(), kv: getKvLogs() });
-    return false;
+    return;
   }
 
   // KV 连通性测试

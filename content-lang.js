@@ -48,7 +48,6 @@ function hasTraditionalChinese(text) {
 // ── 判断文本是否已是中文（无需翻译） ──
 function isAlreadyChinese(text) {
     var foreignRun = 0, maxForeignRun = 0;
-    var hasKana = false, hasHangul = false;
     var anyForeign = false, anyCjk = false;
 
     for (const ch of text) {

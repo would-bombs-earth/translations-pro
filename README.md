@@ -222,3 +222,13 @@ translations_pro/
 | `closeSelPopup()` | content.js | 关闭弹窗并清理事件监听 |
 | `lookupWord()` | background-api.js | Google 词典查询（`dt=t&dt=bd`），返回翻译 + 词性标注数组 |
 | `quickTranslate()` | background-api.js | 轻量 Google 翻译，绕过全量流水线，含 429 重试 |
+
+---
+
+## 更新日志
+
+### v1.1.1
+- **性能优化**：使用 `requestAnimationFrame` 批量处理 DOM 更新，彻底解决复杂页面的渲染卡顿问题。
+- **功能增强**：支持翻译数据导出功能（通过消息通道），方便进行数据备份与分析。
+- **兼容性修复**：修复了在 Twitter 等特定网站上由于劫持 `XMLHttpRequest` 导致的部分静态常量（如 `DONE`, `OPENED`）丢失问题。
+- **权限优化**：移除了不必要的 `alarms` 权限，减少资源占用。

@@ -1,4 +1,4 @@
-﻿
+
 // content.js
 
 // manual flush promise (Fix 1+6: real count from translatePage)
@@ -122,20 +122,21 @@ function processElementAttrs(el, onlyAttr) {
 function processTextNode(node) {
   if (tMode === 'off') return;
   if (!node.parentElement) return;
-  if (isSkippable(node.parentElement)) return;
+  if (!node.parentElement.__gtSafe && isSkippable(node.parentElement)) return;
 
   diag.scanned++;
   const raw = node.textContent;
   if (!raw) return;
 
   const text = normalize(raw);
-  if (text.length < 2) { diag.tooShort++; return; }
+  const len = text.length;
+  if (len < 2) { diag.tooShort++; return; }
+  
+  // Early exit for short punctuation/symbol strings
+  if (len < 5 && /^[\p{P}\p{S}\s]+$/u.test(text)) { diag.tooShort++; return; }
 
-  // Skip @mentions, URLs, pure numbers/symbols
-  if (SKIP_RE.test(text)) { diag.skipRe++; return; }
-
-  // Skip Chinese UI patterns (e.g. 点击 关注 username)
-  if (SKIP_CN_RE.test(text)) { diag.skipCnRe++; return; }
+  // Skip @mentions, URLs, pure numbers/symbols and Chinese UI patterns
+  if (SKIP_COMBINED_RE.test(text)) { diag.skipRe++; return; }
 
   // Cache hit 鈫?apply immediately without queuing (before language check 鈥?faster)
   var cachedTrans2 = cacheGet(text);
@@ -180,12 +181,13 @@ function dispatchIncremental() {
   if (tMode === 'off' || !isAlive() || translating) return;
   if (queue.size < INCREMENTAL_THRESHOLD) return;
 
-  var nodes = [], iter = queue.values(), count = 0, next;
+  var snapshot = [], iter = queue.values(), count = 0, next;
   while (count < BATCH_SIZE && !(next = iter.next()).done) {
-    nodes.push(next.value);
-    queue.delete(next.value);
+    snapshot.push(next.value);
     count++;
   }
+  for (var di = 0; di < snapshot.length; di++) queue.delete(snapshot[di]);
+  var nodes = snapshot;
   if (nodes.length === 0) return;
 
   var processed = [];
@@ -551,12 +553,57 @@ async function translateBatch(batch) {
   diag.translated += pairs.length;
 }
 
+var _pendingWrites = [];
+var _rafScheduled = false;
+
+function _flushWrites() {
+  _rafScheduled = false;
+  if (_pendingWrites.length === 0) return;
+  _muteDepth++;
+  try {
+    for (var i = 0; i < _pendingWrites.length; i++) {
+      var w = _pendingWrites[i];
+      if (w.isAttr) {
+        w.node.__el.setAttribute(w.node.__attr, w.text);
+      } else {
+        w.node.textContent = w.text;
+      }
+    }
+  } finally {
+    _muteDepth--;
+    _pendingWrites.length = 0;
+  }
+}
+
+function _scheduleWrite(node, text, raw, isAttr) {
+  if (tMode === 'manual') {
+    // Manual mode requires synchronous write so UI can verify it immediately
+    _muteDepth++;
+    try {
+      if (isAttr) {
+        node.__el.setAttribute(node.__attr, text);
+      } else {
+        node.textContent = text;
+      }
+    } finally {
+      _muteDepth--;
+    }
+  } else {
+    _pendingWrites.push({ node: node, text: text, isAttr: isAttr });
+    if (!_rafScheduled) {
+      _rafScheduled = true;
+      requestAnimationFrame(_flushWrites);
+    }
+  }
+}
+
 function applyTranslation(node, raw, translated) {
   // Handle attribute wrapper objects
   if (node.__isAttr) {
     const el = node.__el, attr = node.__attr;
     if (!el.isConnected) return;
     const cleanAttrVal = cleanTranslation(translated);
+    if (!cleanAttrVal || cleanAttrVal === raw) return;
     // Store original attr value for restore (only first time)
     if (!el.__gt_orig_attrs) el.__gt_orig_attrs = {};
     if (!(attr in el.__gt_orig_attrs)) el.__gt_orig_attrs[attr] = raw;
@@ -566,7 +613,8 @@ function applyTranslation(node, raw, translated) {
     // Mark as translated to prevent observer feedback loop
     if (!translatedAttrs.has(el)) translatedAttrs.set(el, new Map());
     translatedAttrs.get(el).set(attr, { raw: raw, translated: cleanAttrVal });
-    el.setAttribute(attr, cleanAttrVal);
+    
+    _scheduleWrite(node, cleanAttrVal, raw, true);
     return;
   }
 
@@ -574,17 +622,18 @@ function applyTranslation(node, raw, translated) {
   if (node.parentElement && node.isConnected) {
     const translatedText = cleanTranslation(translated);
     if (!translatedText) return;
-    if (normalize(translatedText) === normalize(raw)) return;
+    
+    // raw is already normalized by caller (processTextNode or flushQueue)
+    if (translatedText === raw) return;
+    
     if (node.__gt_orig === undefined) {
       node.__gt_orig = node.textContent;
     }
     origTextMap.set(node, { raw: raw, translated: translatedText });
-    // Simple direct write 鈥?no DOM structure changes, no React breakage
-    node.textContent = translatedText;
+    
+    _scheduleWrite(node, translatedText, raw, false);
     return;
   }
-
-  // Node is detached 鈥?skip.
 }
 
 
@@ -630,10 +679,8 @@ async function flushQueue() {
         var cachedNode = cacheGet(raw);
         if (cachedNode !== undefined) {
           diag.cached++;
-          var beforeApply = node.__isAttr ? node.__el.getAttribute(node.__attr) : node.textContent;
           applyTranslation(node, raw, cachedNode);
-          var afterApply = node.__isAttr ? node.__el.getAttribute(node.__attr) : node.textContent;
-          if (beforeApply !== afterApply) translatedCount++;
+          if (cachedNode !== raw) translatedCount++;
           continue;
         }
 
@@ -647,9 +694,10 @@ async function flushQueue() {
     let index = 0;
 
     async function worker() {
-      while (index < batches.length) {
+      while (true) {
         if (tMode === 'off') return;
         const i = index++;
+        if (i >= batches.length) break;
         try {
           await translateBatch(batches[i]);
         } catch (e) {
@@ -688,9 +736,12 @@ async function flushQueue() {
           const attr = node.__attr;
           if (el.__gt_orig_attrs && attr in el.__gt_orig_attrs) {
             _muteDepth++;
-            el.setAttribute(attr, el.__gt_orig_attrs[attr]);
-            delete el.__gt_orig_attrs[attr];
-            _muteDepth--;
+            try {
+              el.setAttribute(attr, el.__gt_orig_attrs[attr]);
+              delete el.__gt_orig_attrs[attr];
+            } finally {
+              _muteDepth--;
+            }
           }
         } else {
           if (origTextMap.has(node)) {
@@ -746,6 +797,7 @@ function restorePage() {
   tMode = 'off';
   clearPendingWork();
   stopObserver();
+  if (typeof clearCleanCache === 'function') clearCleanCache();
   _flushGen++;
   _iF = {};
   _iA = 0;
@@ -814,9 +866,8 @@ function notifyTranslatedState(translated) {
 }
 
 function _stopAndRestore() {
-  tMode = 'off';
-  clearPendingWork();
-  stopObserver();
+  // restorePage() internally sets tMode='off', clears work, and stops observer,
+  // so we only need to call restorePage() directly to avoid redundant double-execution.
   restorePage();
   notifyTranslatedState(false);
 }
@@ -935,6 +986,36 @@ chrome.runtime.onMessage.addListener((msg, _s, send) => {
       delete _iF[grpId];
     }
     return;
+  }
+
+  if (msg.action === 'export_translations') {
+    var pairs = [];
+    _muteDepth++;
+    try {
+      var textNodes = [], elements = [];
+      _coll(document.body, textNodes, elements);
+      textNodes.forEach(function (node) {
+        if (origTextMap.has(node)) {
+          var entry = origTextMap.get(node);
+          pairs.push({ raw: entry.raw, translated: entry.translated });
+        }
+      });
+      elements.forEach(function (el) {
+        if (el.__gt_orig_attrs) {
+          Object.keys(el.__gt_orig_attrs).forEach(function (attr) {
+            var origVal = el.__gt_orig_attrs[attr];
+            var curVal = el.getAttribute(attr);
+            if (origVal && curVal && origVal !== curVal) {
+              pairs.push({ raw: origVal, translated: curVal });
+            }
+          });
+        }
+      });
+    } finally {
+      _muteDepth--;
+    }
+    send({ success: true, pairs: pairs });
+    return true;
   }
 
 });
@@ -1166,8 +1247,10 @@ function setupSelectionTranslate() {
     if (!text || text.length < 2 || text.length > 5000) return;
 
     // Check local caches first
-    var hit = cacheGet(text) || _selCache.get(text);
-    if (hit) { showSelPopup(text, hit.translation, hit.dict || null); return; }
+    var selCacheHit = _selCache.get(text);
+    if (selCacheHit) { showSelPopup(text, selCacheHit.translation, selCacheHit.dict || null); return; }
+    var contentCacheHit = cacheGet(text);
+    if (contentCacheHit) { showSelPopup(text, contentCacheHit, null); return; }
 
     var isWord = /^[a-zA-Z-]+$/.test(text) && text.length < 40;
     showSelPopup(text, '翻译中...');

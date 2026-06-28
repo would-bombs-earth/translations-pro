@@ -164,7 +164,7 @@ function hasMojibake(text) {
     if (meaningful === 0) return false;
     // 含 CJK → 合法中文译文，不可能是乱码（乱码由 Latin-1 误解码产生，不含 CJK）
     if (cjk > 0) return false;
-    // 无 CJK 且 Latin-1 乱码字符占比 > 35% → 判定为乱码
+    // 无 CJK 且 Latin-1 乱码字符占比 > 40% → 判定为乱码
     if (bad > meaningful * 0.40) return true;
     return false;
 }
@@ -404,7 +404,11 @@ async function translateViaGoogle(texts, sl) {
     }
 
     async function worker() {
-        while (index < sourceList.length) { await translateOne(index++); }
+        while (true) {
+            var i = index++;
+            if (i >= sourceList.length) break;
+            await translateOne(i);
+        }
     }
 
     var workerCount = Math.min(MAX_PARALLEL, sourceList.length);
@@ -584,73 +588,42 @@ async function translateViaEngine(text, sl, engine) {
 // 主翻译入口 (export)
 // ═══════════════════════════════════════════════════════════
 
-const _keepAlivePorts = new Map();
-
-function _acquireKeepAlive() {
-    try {
-        const port = chrome.runtime.connect({ name: 'keepAlive' });
-        port.onDisconnect.addListener(() => {
-            void chrome.runtime.lastError;
-        });
-        const id = Date.now() + '-' + Math.random().toString(36).slice(2);
-        _keepAlivePorts.set(id, port);
-        return { port, id };
-    } catch (_) {
-        return null;
-    }
-}
-
-function _releaseKeepAlive(id) {
-    const port = _keepAlivePorts.get(id);
-    if (port) {
-        _keepAlivePorts.delete(id);
-        try { port.disconnect(); } catch (_) { }
-    }
-}
-
 export async function google(text, sl = 'auto', domain = '', tabId = null, groupId = null) {
-    const ka = typeof chrome !== 'undefined' && chrome.runtime?.connect
-        ? _acquireKeepAlive() : null;
-    try {
-        const clean = sanitizeText(text);
-        const cacheKey = (domain ? domain + '::' : '') + sl + '::' + clean;
+    const clean = sanitizeText(text);
+    const cacheKey = (domain ? domain + '::' : '') + sl + '::' + clean;
 
-        const cached = cacheGet(cacheKey);
-        if (cached !== undefined) {
-            return { translation: cached, engine: '(cache)' };
-        }
-
-        const { selectedEngine } = await chrome.storage.local.get('selectedEngine');
-        let engine = selectedEngine || 'google';
-
-        let result = null;
-        try {
-            result = await translateWithChunking(clean, sl, engine);
-        } catch (e) {
-            ERR(engine + ' 翻译失败:', e?.message || String(e));
-
-            // 自动降级链: google → microsoft
-            var fallback = engine === 'google' ? 'microsoft' : 'google';
-            LOG(engine + ' 失败 → 降级到 ' + fallback);
-            try {
-                result = await translateWithChunking(clean, sl, fallback);
-                engine = fallback;
-            } catch (e2) {
-                ERR('降级也失败:', e2?.message || String(e2));
-                result = null;
-            }
-        }
-
-        if (!result?.translation) {
-            throw new Error('all endpoints failed');
-        }
-
-        cacheSet(cacheKey, result.translation);
-        return { translation: result.translation, engine: engine };
-    } finally {
-        // keepAlive 延长到 5s，防止大批量翻译期间 SW 被终止
-        if (ka) setTimeout(() => _releaseKeepAlive(ka.id), 5000);
+    const cached = cacheGet(cacheKey);
+    if (cached !== undefined) {
+        return { translation: cached, engine: '(cache)' };
     }
+
+    const { selectedEngine } = await chrome.storage.local.get('selectedEngine');
+    let engine = selectedEngine || 'google';
+
+    let result = null;
+    try {
+        result = await translateWithChunking(clean, sl, engine);
+    } catch (e) {
+        ERR(engine + ' 翻译失败:', e?.message || String(e));
+
+        // 自动降级链: google → microsoft
+        var fallback = engine === 'google' ? 'microsoft' : 'google';
+        LOG(engine + ' 失败 → 降级到 ' + fallback);
+        try {
+            result = await translateWithChunking(clean, sl, fallback);
+            engine = fallback;
+        } catch (e2) {
+            ERR('降级也失败:', e2?.message || String(e2));
+            result = null;
+        }
+    }
+
+    if (!result?.translation) {
+        throw new Error('all endpoints failed');
+    }
+
+    cacheSet(cacheKey, result.translation);
+    return { translation: result.translation, engine: engine };
 }
 
 async function translateWithChunking(text, sl, engine) {

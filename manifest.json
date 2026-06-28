@@ -1,15 +1,14 @@
 {
   "manifest_version": 3,
   "name": "极译",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "智能多引擎网页翻译",
   "permissions": [
     "storage",
     "tabs",
     "activeTab",
     "contextMenus",
-    "scripting",
-    "alarms"
+    "scripting"
   ],
   "host_permissions": [
     "<all_urls>",

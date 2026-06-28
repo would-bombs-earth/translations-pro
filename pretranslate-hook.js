@@ -105,5 +105,13 @@
     return xhr;
   };
   window.XMLHttpRequest.prototype = OrigXHR.prototype;
-
+  // Copy static constants (UNSENT=0, OPENED=1, HEADERS_RECEIVED=2, LOADING=3, DONE=4)
+  Object.keys(OrigXHR).forEach(function (k) {
+    try { window.XMLHttpRequest[k] = OrigXHR[k]; } catch (_) {}
+  });
+  window.XMLHttpRequest.UNSENT = 0;
+  window.XMLHttpRequest.OPENED = 1;
+  window.XMLHttpRequest.HEADERS_RECEIVED = 2;
+  window.XMLHttpRequest.LOADING = 3;
+  window.XMLHttpRequest.DONE = 4;
 })();

@@ -133,7 +133,26 @@ var LONE_MARKER_RE = /[⟪⟫【】\[\]]/g;
 var HTML_TAG_RE = /<\/?[a-zA-Z][\w-]*(?:\s[^>]*)?\/?>/g;
 var HAS_CJK_RE = /[一-鿿㐀-䶿豈-﫿]/;
 
+var _cleanCache = new Map();
+var _CLEAN_CACHE_MAX = 2000;
+
 function cleanTranslation(s) {
+    var cached = _cleanCache.get(s);
+    if (cached !== undefined) return cached;
+    var result = _cleanTranslationImpl(s);
+    if (_cleanCache.size >= _CLEAN_CACHE_MAX) {
+        var iter = _cleanCache.keys(), del = _CLEAN_CACHE_MAX >> 2;
+        for (var i = 0; i < del; i++) _cleanCache.delete(iter.next().value);
+    }
+    _cleanCache.set(s, result);
+    return result;
+}
+
+function clearCleanCache() {
+    _cleanCache.clear();
+}
+
+function _cleanTranslationImpl(s) {
     // 快速路径：无标记符号则跳过 stripMarkerSeqs 和 while 循环
     if (s.indexOf('\u27EA') === -1 && s.indexOf('=>') === -1 && s.indexOf('->') === -1) {
         s = s.trim();
@@ -216,6 +235,7 @@ function seenAdd(text) {
 // ── 跳过模式 ──
 var SKIP_RE = /^(?:@[\w.\-]+|#\w+|https?:\/\/\S*|t\.me\/\S*|[\w.\-]+\.(?:com|org|net|io|co|jp|ai|gg|ly|dev|app|xyz|info|me|tv|html|htm|php|pdf|png|jpg|gif|svg|css|js|xml|json)\S*|[=?&\/][\w.\-=?&\/]*|\d[\d:.,\/%+\-\u00d7\u00f7]*[KkMmBb%+]?|[\s\p{P}\p{S}]+)$/u;
 var SKIP_CN_RE = /^(?:[\u4E00-\u9FFF\u3400-\u4DBF\uF900-\uFAFF]{1,10}\s*[a-zA-Z0-9_\-@\.]+|\d[\d.,]*[KkMmBb]?\s+[\u4E00-\u9FFF\u3400-\u4DBF\uF900-\uFAFF]{1,10})$/u;
+var SKIP_COMBINED_RE = /^(?:@[\w.\-]+|#\w+|https?:\/\/\S*|t\.me\/\S*|[\w.\-]+\.(?:com|org|net|io|co|jp|ai|gg|ly|dev|app|xyz|info|me|tv|html|htm|php|pdf|png|jpg|gif|svg|css|js|xml|json)\S*|[=?&\/][\w.\-=?&\/]*|\d[\d:.,\/%+\-\u00d7\u00f7]*[KkMmBb%+]?|[\s\p{P}\p{S}]+|[\u4E00-\u9FFF\u3400-\u4DBF\uF900-\uFAFF]{1,10}\s*[a-zA-Z0-9_\-@\.]+|\d[\d.,]*[KkMmBb]?\s+[\u4E00-\u9FFF\u3400-\u4DBF\uF900-\uFAFF]{1,10})$/u;
 
 // \u2500\u2500 ASCII \u975E\u81EA\u7136\u8BED\u8A00\u68C0\u6D4B \u2500\u2500
 // \u77ED\u7EAF ASCII \u5B57\u7B26\u4E32\u82E5\u4E0D\u5305\u542B\u81EA\u7136\u8BED\u8A00\u7279\u5F81\uFF08\u7A7A\u683C/\u591A\u5B57\u6BCD\u5355\u8BCD\uFF09\uFF0C\u4E0D\u5E94\u9001\u7FFB\u8BD1\u5F15\u64CE\u3002
@@ -336,6 +356,7 @@ function isSkippable(el) {
     if (!cur || cur === document.body || cur === document.documentElement) {
         _notSkippable.add(el);
     }
+    el.__gtSafe = true;
     return false;
 }
 
