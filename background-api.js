@@ -356,67 +356,99 @@ async function fetchWithAbort(url, opts = {}, timeoutMs = 10000) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// Google 翻译 (translate.googleapis.com 免费接口)
+// Google 翻译 (网页端 batchexecute 接口)
 // ═══════════════════════════════════════════════════════════
 
-async function translateViaGoogle(texts, sl) {
-    // Google 免费接口单次只接受一个文本（q 参数），使用并行 worker pool 加速
-    var sourceList = Array.isArray(texts) ? texts : [texts];
-    var translations = new Array(sourceList.length);
+async function _googleBatchexecuteRequest(text, sl) {
+    const url = 'https://translate.google.com/_/TranslateWebserverUi/data/batchexecute?rpcids=MkEWBc';
+    const innerPayload = JSON.stringify([[text, sl === 'auto' ? 'auto' : sl, "zh-CN", true], [null]]);
+    const reqData = `f.req=${encodeURIComponent(JSON.stringify([[["MkEWBc", innerPayload, null, "generic"]]]))}&`;
 
-    var MAX_PARALLEL = 8;
-    var index = 0;
-
-    async function translateOne(itemIndex) {
-        var t = sourceList[itemIndex];
-        if (!t || !t.trim()) { translations[itemIndex] = ''; return; }
-        var params = new URLSearchParams({
-            client: 'gtx',
-            sl: sl === 'auto' ? 'auto' : sl,
-            tl: 'zh-CN',
-            dt: 't',
-            q: t
-        });
-        var url = 'https://translate.googleapis.com/translate_a/single?' + params.toString();
-        var translatedText = '';
-        for (var retry = 0; retry < 2; retry++) {
-            try {
-                var res = await fetch(url);
-                if (res.status === 429) {
-                    if (retry < 1) { await new Promise(function (r) { setTimeout(r, 300 * (retry + 1)); }); continue; }
-                    translatedText = t; break;
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8' },
+        body: reqData,
+        credentials: 'omit'
+    });
+    
+    if (!res.ok) {
+        if (res.status === 429) {
+            const err = new Error('429');
+            err.status = 429;
+            throw err;
+        }
+        throw new Error('Google HTTP ' + res.status);
+    }
+    
+    const rawText = await res.text();
+    let innerJsonString = null;
+    
+    try {
+        const jsonStart = rawText.indexOf('[');
+        if (jsonStart !== -1) {
+            const outerArray = JSON.parse(rawText.slice(jsonStart));
+            for (const arr of outerArray) {
+                if (Array.isArray(arr) && arr[0] === 'wrb.fr' && arr[1] === 'MkEWBc') {
+                    innerJsonString = arr[2];
+                    break;
                 }
-                if (!res.ok) { if (retry < 1) { await new Promise(function (r) { setTimeout(r, 150); }); continue; } throw new Error('Google HTTP ' + res.status); }
-                var text = await res.text();
-                try {
-                    var data = JSON.parse(text);
-                    if (Array.isArray(data) && Array.isArray(data[0])) {
-                        for (var j = 0; j < data[0].length; j++) { if (Array.isArray(data[0][j]) && data[0][j][0]) translatedText += data[0][j][0]; }
-                    }
-                    translatedText = translatedText || t;
-                } catch (_) { translatedText = t; }
-                break;
-            } catch (e) {
-                if (retry >= 1) { translatedText = t; } else { await new Promise(function (r) { setTimeout(r, 100); }); }
             }
+            if (!innerJsonString && Array.isArray(outerArray[0])) innerJsonString = outerArray[0][2];
         }
-        translations[itemIndex] = translatedText;
-    }
-
-    async function worker() {
-        while (true) {
-            var i = index++;
-            if (i >= sourceList.length) break;
-            await translateOne(i);
+    } catch (e) {
+        // Fallback for custom chunked responses (e.g. trailing chunk numbers)
+        const lines = rawText.split('\n');
+        for (const line of lines) {
+            if (line.includes('"wrb.fr"')) {
+                try {
+                    const startIdx = line.indexOf('[');
+                    const parsed = JSON.parse(line.slice(startIdx));
+                    for (const arr of parsed) {
+                        if (Array.isArray(arr) && arr[0] === 'wrb.fr') {
+                            innerJsonString = arr[2];
+                            break;
+                        }
+                    }
+                } catch(e2) {}
+            }
+            if (innerJsonString) break;
         }
     }
+    
+    if (!innerJsonString) throw new Error('No inner data');
+    
+    const innerArray = JSON.parse(innerJsonString);
+    let translatedText = '';
+    
+    if (innerArray && innerArray[1] && innerArray[1][0] && innerArray[1][0][0]) {
+        const segments = innerArray[1][0][0][5];
+        if (Array.isArray(segments)) {
+            translatedText = segments.map(item => (item && item[0]) ? item[0] : '').join('');
+        } else if (innerArray[1][0][0][0]) {
+            translatedText = innerArray[1][0][0][0]; 
+        }
+    }
+    if (!translatedText) throw new Error('Google batchexecute returned empty translation or unrecognized format');
+    return translatedText;
+}
 
-    var workerCount = Math.min(MAX_PARALLEL, sourceList.length);
-    var workers = [];
-    for (var w = 0; w < workerCount; w++) workers.push(worker());
-    await Promise.all(workers);
-
-    return { translations: translations };
+async function translateViaGoogle(text, sl) {
+    if (!text || !text.trim()) return { translation: '' };
+    
+    let translatedText = '';
+    for (let retry = 0; retry < 2; retry++) {
+        try {
+            translatedText = await _googleBatchexecuteRequest(text, sl);
+            break;
+        } catch (e) {
+            if (e.status === 429) {
+                if (retry < 1) { await new Promise(r => setTimeout(r, 300 * (retry + 1))); continue; }
+                throw e;
+            }
+            if (retry >= 1) { throw e; } else { await new Promise(r => setTimeout(r, 150)); }
+        }
+    }
+    return { translation: translatedText };
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -471,28 +503,15 @@ export async function quickTranslate(text) {
     var clean = sanitizeText(text);
     if (!clean) return { translation: '' };
 
-    var url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh-CN&dt=t&q=' + encodeURIComponent(clean);
     for (var retry = 0; retry < 2; retry++) {
         try {
-            var res = await fetch(url);
-            if (res.status === 429) {
+            var translation = await _googleBatchexecuteRequest(clean, 'auto');
+            return { translation: translation };
+        } catch (e) {
+            if (e.status === 429) {
                 if (retry < 1) { await new Promise(function (r) { setTimeout(r, 300); }); continue; }
                 return { translation: '' };
             }
-            if (!res.ok) {
-                if (retry < 1) { await new Promise(function (r) { setTimeout(r, 150); }); continue; }
-                return { translation: '' };
-            }
-            var raw = await res.text();
-            var data = JSON.parse(raw);
-            var translation = '';
-            if (Array.isArray(data) && Array.isArray(data[0])) {
-                for (var j = 0; j < data[0].length; j++) {
-                    if (Array.isArray(data[0][j]) && data[0][j][0]) translation += data[0][j][0];
-                }
-            }
-            return { translation: translation || clean };
-        } catch (e) {
             if (retry >= 1) return { translation: '' };
             await new Promise(function (r) { setTimeout(r, 100); });
         }
@@ -521,18 +540,6 @@ function _detectSlFromText(text) {
     return 'en';
 }
 
-// ═══════════════════════════════════════════════════════════
-// 从标记文本中提取段落：⟪N⟫text → { markers, texts }
-function _parseSegments(markedText) {
-    var re = new RegExp('(' + MARK_L + '\\d+' + MARK_R + ')([^\\n]*)', 'g');
-    var markers = [], texts = [];
-    var m;
-    while ((m = re.exec(markedText))) {
-        markers.push(m[1]);
-        texts.push(m[2]);
-    }
-    return { markers: markers, texts: texts };
-}
 
 // 引擎路由
 // ═══════════════════════════════════════════════════════════
@@ -543,25 +550,15 @@ async function translateViaEngine(text, sl, engine) {
         return { translation: res.translation, engine: 'microsoft' };
     }
     if (engine === 'google') {
-        // Google：拆标记为独立数组元素逐条翻译，避免标记被破坏
-        var gsegs = _parseSegments(text);
-        if (gsegs.texts.length > 1) {
-            var gtr = await translateViaGoogle(gsegs.texts, sl);
-            var glines = [];
-            for (var gi = 0; gi < gsegs.markers.length && gi < gtr.translations.length; gi++) {
-                var gtranslated = gtr.translations[gi] || '';
-                if (gtranslated && !/[一-鿿]/.test(gtranslated) && /[a-zA-Z]{3,}/.test(gsegs.texts[gi])) {
-                    gtranslated = gsegs.texts[gi];
-                }
-                glines.push(gsegs.markers[gi] + gtranslated);
-            }
-            return { translation: glines.join('\n'), engine: 'google' };
-        }
-        var gtxt = gsegs.texts.length === 1 ? gsegs.texts[0] : text;
-        const gres = await translateViaGoogle([gtxt], sl);
-        var gsingle = gres.translations[0] || '';
-        if (gsingle && !/[一-鿿]/.test(gsingle) && gtxt && /[a-zA-Z]{3,}/.test(gtxt)) {
-            gsingle = gtxt;
+        // batchexecute 接口能够很好地保留 ⟪⟫ 标记，无需再切碎为几十个短句发送，避免触发 Google 400/429 风控
+        const gres = await translateViaGoogle(text, sl);
+        var gsingle = gres.translation || '';
+        
+        // 修复引擎可能在标记周围添加的空格
+        gsingle = gsingle.replace(/⟪\s*(\d+)\s*⟫/g, '⟪$1⟫');
+
+        if (gsingle && !/[一-鿿]/.test(gsingle) && text && /[a-zA-Z]{3,}/.test(text)) {
+            gsingle = text;
         }
         return { translation: gsingle, engine: 'google' };
     }
@@ -615,7 +612,7 @@ async function translateWithChunking(text, sl, engine) {
     var processed = (engine === 'google' || engine === 'microsoft') ? preprocessForEngine(text) : text;
 
     // Google / 微软引擎：使用标记文本分块
-    var limit = engine === 'google' ? 1600 : MS_LIMIT; // Google 免费接口有长度限制, 微软 4500
+    var limit = engine === 'google' ? MS_LIMIT : MS_LIMIT; // Google batchexecute 支持更大分块，统一使用 4500
     var chunks = splitMarkerChunks(processed, limit);
     if (chunks.length === 1) {
         return await enqueueFetch(() => translateViaEngine(chunks[0], sl, engine));
@@ -628,8 +625,10 @@ async function translateWithChunking(text, sl, engine) {
                 .catch(e => { ERR(engine + ' chunk:', e?.message || String(e)); return null; })
         )
     );
-    const valid = results.filter(r => r && r.translation != null).map(r => r.translation);
-    if (!valid.length) throw new Error('all chunks failed');
+    if (results.some(r => !r || r.translation == null)) {
+        throw new Error('some chunks failed');
+    }
+    const valid = results.map(r => r.translation);
     return { translation: valid.join('\n'), engine: engine };
 }
 
@@ -653,8 +652,8 @@ export async function pingMicrosoft() {
 export async function pingGoogle() {
     const t0 = performance.now();
     try {
-        const result = await translateViaGoogle(['hello'], 'en');
-        if (result.translations?.length && result.translations[0]) {
+        const result = await translateViaGoogle('hello', 'en');
+        if (result.translation) {
             return { name: 'google', ms: Math.round(performance.now() - t0), ok: true };
         }
         return { name: 'google', ms: Math.round(performance.now() - t0), ok: false, error: 'empty' };

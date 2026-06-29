@@ -42,8 +42,8 @@ async function selectEngine(engine) {
   renderEngineSelection();
   await chrome.storage.local.set({ selectedEngine: engine });
   chrome.runtime.sendMessage({ type: 'engine_selected', engine: engine }).catch(() => { });
-  var names = { google: 'Google 翻译', microsoft: '微软翻译' };
-  showStatus('✅ 已切换至' + (names[engine] || engine));
+  var names = { google: '谷歌翻译', microsoft: '微软翻译' };
+  showStatus('已切换至' + (names[engine] || engine));
 }
 
 async function pingAndRender() {
@@ -75,7 +75,7 @@ async function pingAndRender() {
       latencyMS.className = 'eng-card-latency ' + latencyClass(msResult.ms);
       latencyMS.removeAttribute('data-tooltip');
     } else {
-      latencyMS.textContent = '不可用';
+      latencyMS.textContent = '不可用' + (msResult?.ms ? ` (${msResult.ms}ms)` : '');
       latencyMS.className = 'eng-card-latency dead';
       cardMS.classList.add('dead-card');
       if (msResult?.error) latencyMS.setAttribute('data-tooltip', msResult.error);
@@ -87,7 +87,7 @@ async function pingAndRender() {
       latencyGG.className = 'eng-card-latency ' + latencyClass(ggResult.ms);
       latencyGG.removeAttribute('data-tooltip');
     } else {
-      latencyGG.textContent = '不可用';
+      latencyGG.textContent = '不可用' + (ggResult?.ms ? ` (${ggResult.ms}ms)` : '');
       latencyGG.className = 'eng-card-latency dead';
       cardGG.classList.add('dead-card');
       if (ggResult?.error) latencyGG.setAttribute('data-tooltip', ggResult.error);
@@ -273,7 +273,7 @@ kvCfgImportInput.addEventListener('change', async () => {
     const text = await file.text();
     const config = JSON.parse(text);
     if (!config.cfApiToken || !config.cfAccountId || !config.cfNamespaceId) {
-      showStatus('⚠️ KV 配置文件格式无效，缺少必填字段', true);
+      showStatus('KV 配置文件格式无效，缺少必填字段', true);
       return;
     }
     cfApiTokenInput.value = config.cfApiToken || '';
@@ -282,9 +282,9 @@ kvCfgImportInput.addEventListener('change', async () => {
     await saveKvConfig();
     chrome.runtime.sendMessage({ type: 'kv_config_updated' }).catch(() => { });
     pingKv();
-    showStatus('✅ KV 配置已导入并保存');
+    showStatus('KV 配置已导入并保存');
   } catch (e) {
-    showStatus('⚠️ 文件解析失败: ' + (e?.message || '未知错误'), true);
+    showStatus('文件解析失败: ' + (e?.message || '未知错误'), true);
   }
 });
 
@@ -350,7 +350,11 @@ function setUnavailable(text) {
 }
 
 function showStatus(msg, isErr = false) {
-  statusEl.textContent = msg;
+  const iconSvg = isErr 
+    ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>`
+    : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
+  
+  statusEl.innerHTML = `${iconSvg}<span>${escapeHtml(msg)}</span>`;
   statusEl.style.opacity = '1';
   statusEl.className = isErr ? 'err' : '';
 
@@ -407,10 +411,10 @@ autoChk.addEventListener('change', async () => {
   try {
     autoChk.disabled = true;
     await saveAutoTranslateSetting();
-    showStatus(autoChk.checked ? '✅ 已开启自动翻译' : '✅ 已关闭自动翻译');
+    showStatus(autoChk.checked ? '已开启自动翻译' : '已关闭自动翻译');
   } catch (_) {
     autoChk.checked = !autoChk.checked;
-    showStatus('❌ 保存失败', true);
+    showStatus('保存失败', true);
   } finally {
     autoChk.disabled = false;
   }
@@ -431,7 +435,7 @@ actionBtn.addEventListener('click', async () => {
 });
 
 async function translateCurrentPage() {
-  setBusy('🔄 翻译中…');
+  setBusy('翻译中…');
 
   try {
     const res = await chrome.tabs.sendMessage(currentTabId, { action: 'translate_page' });
@@ -440,31 +444,31 @@ async function translateCurrentPage() {
       await setTabTranslatedState(currentTabId, true);
       showStatus(formatTranslateSuccess(res));
     } else if (res?.reason === 'busy') {
-      showStatus('🔄 翻译进行中，请稍候…', true);
+      showStatus('翻译进行中，请稍候…', true);
     } else {
-      showStatus('⚠️ 翻译失败，请刷新页面后重试', true);
+      showStatus('翻译失败，请刷新页面后重试', true);
     }
   } catch (_) {
-    showStatus('❌ 当前页面无法翻译，请刷新或换页面重试', true);
+    showStatus('当前页面无法翻译，请刷新或换页面重试', true);
   } finally {
     clearBusy();
   }
 }
 
 async function restoreCurrentPage() {
-  setBusy('🔄 恢复中…');
+  setBusy('恢复中…');
 
   try {
     const res = await chrome.tabs.sendMessage(currentTabId, { action: 'restore_page' });
     if (res?.success === true) {
       isTranslated = false;
       await setTabTranslatedState(currentTabId, false);
-      showStatus('✅ 已恢复原文');
+      showStatus('已恢复原文');
     } else {
-      showStatus('⚠️ 恢复失败，请刷新页面后重试', true);
+      showStatus('恢复失败，请刷新页面后重试', true);
     }
   } catch (_) {
-    showStatus('❌ 当前页面无法恢复，请刷新页面后重试', true);
+    showStatus('当前页面无法恢复，请刷新页面后重试', true);
   } finally {
     clearBusy();
   }
@@ -472,9 +476,9 @@ async function restoreCurrentPage() {
 
 function formatTranslateSuccess(res) {
   if (typeof res?.count === 'number') {
-    return `✨ 已翻译${res.count} 处`;
+    return `已翻译 ${res.count} 处`;
   }
-  return '✨ 已翻译当前页面';
+  return '已翻译当前页面';
 }
 
 // ══════════════════════════════════════════════════════
@@ -593,7 +597,9 @@ async function addDomain(d) {
   if (!d || !d.includes('.')) return;
   var domainSet = new Set(domains);
   if (domainSet.has(d)) {
-    showStatus('⚠️ 域名已存在', true);
+    showStatus('域名已存在', true);
+    domainInput.value = d;
+    renderDomains(d);
     return;
   }
   var newList = [...new Set([...domains, d])].sort();
@@ -602,10 +608,12 @@ async function addDomain(d) {
   try {
     const resp = await chrome.runtime.sendMessage({ type: 'kv_put_domains', domains: newList });
     if (!resp?.ok) {
-      showStatus('⚠️ KV 上传失败: ' + (resp?.error || '服务器错误'), true);
+      showStatus('KV 上传失败: ' + (resp?.error || '服务器错误'), true);
+    } else {
+      showStatus('已添加排除域名: ' + d);
     }
   } catch (e) {
-    showStatus('⚠️ KV 通讯失败: ' + (e?.message || '未知错误'), true);
+    showStatus('KV 通讯失败: ' + (e?.message || '未知错误'), true);
   }
 }
 
@@ -614,10 +622,12 @@ async function removeDomain(d) {
   try {
     const resp = await chrome.runtime.sendMessage({ type: 'kv_put_domains', domains: newList });
     if (!resp?.ok) {
-      showStatus('⚠️ KV 上传失败: ' + (resp?.error || '服务器错误'), true);
+      showStatus('KV 上传失败: ' + (resp?.error || '服务器错误'), true);
+    } else {
+      showStatus('已移除域名: ' + d);
     }
   } catch (e) {
-    showStatus('⚠️ KV 通讯失败: ' + (e?.message || '未知错误'), true);
+    showStatus('KV 通讯失败: ' + (e?.message || '未知错误'), true);
   }
 }
 
@@ -763,7 +773,7 @@ domainInput.addEventListener('keydown', e => {
 
 $('exportTranslations').addEventListener('click', async () => {
   if (!currentTabId) return;
-  setBusy('🔄 导出中…');
+  setBusy('导出中…');
   try {
     const res = await chrome.tabs.sendMessage(currentTabId, { action: 'export_translations' });
     if (res?.pairs?.length) {
@@ -780,12 +790,12 @@ $('exportTranslations').addEventListener('click', async () => {
       a.download = filename;
       a.click();
       URL.revokeObjectURL(url);
-      showStatus('✅ 已导出 ' + res.pairs.length + ' 条译文');
+      showStatus('已导出 ' + res.pairs.length + ' 条译文');
     } else {
-      showStatus('⚠️ 没有找到已翻译的内容', true);
+      showStatus('没有找到已翻译的内容', true);
     }
   } catch (_) {
-    showStatus('⚠️ 导出失败', true);
+    showStatus('导出失败', true);
   } finally {
     clearBusy();
   }
@@ -828,7 +838,7 @@ $('exportLogs').addEventListener('click', async () => {
   } catch (_) { }
 
   if (!all.length) {
-    showStatus('⚠️ 暂无日志', true);
+    showStatus('暂无日志', true);
     return;
   }
 
@@ -839,15 +849,15 @@ $('exportLogs').addEventListener('click', async () => {
   if (currentTabId) {
     try {
       await chrome.tabs.sendMessage(currentTabId, { action: 'save_logs', text: text, filename: filename });
-      showStatus('✅ 日志已导出: ' + filename);
+      showStatus('日志已导出: ' + filename);
       return;
     } catch (_) { }
   }
 
   try {
     await navigator.clipboard.writeText(text);
-    showStatus('📋 日志已复制到剪贴板');
+    showStatus('日志已复制到剪贴板');
   } catch (_) {
-    showStatus('⚠️ 导出失败，请在页面中按 F12 查看控制台', true);
+    showStatus('导出失败，请在页面中按 F12 查看控制台', true);
   }
 });

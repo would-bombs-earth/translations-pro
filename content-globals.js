@@ -98,7 +98,7 @@ var MAX_QUEUE = 200000;
 var BATCH_SIZE = 1024;
 var BATCH_CHARS = 200000; // 大批次 = 更少 API 调用
 var CONCURRENT = 3; // 匹配 background fetch 并发数，加速大批次页面翻译
-var FLUSH_MS = 0;
+var FLUSH_MS = 150; // 延迟打包 DOM 突变，合并为大批次以减少 API 请求数并绕过并发限流
 var HYDRATION_DELAY_MS = 3500; // Twitter/X 等重 SPA 需要更长水合时间
 var INCREMENTAL_THRESHOLD = 8;
 var SOLO_THRESHOLD = 1800; // 超过此长度的文本单独成批（避免标记损坏）

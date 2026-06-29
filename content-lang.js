@@ -46,7 +46,45 @@ function hasTraditionalChinese(text) {
 }
 
 // ── 判断文本是否已是中文（无需翻译） ──
-function isAlreadyChinese(text) {
+var _pageLangForeign = false; // true = 页面 lang 为非中文 CJK 语言(如 ja)
+var _pageLangZH = false;      // true = 页面整体为简体中文（用于在混合页面保守翻译）
+
+function isAlreadyChinese(text, node) {
+    // 保守模式：如果是中文页面，对于简短的独立纯英文词汇（如 "VIP", "iPhone"），不应该视为需要翻译的外文，
+    // 除非它被明确标注了外文 lang 属性（如推特的推文）。
+    var isConservative = false;
+    if (_pageLangZH) {
+        isConservative = true;
+        if (node && node.parentElement) {
+            var closest = node.parentElement.closest('[lang]');
+            if (closest) {
+                var lang = closest.getAttribute('lang').toLowerCase();
+                if (lang !== 'zh' && !lang.startsWith('zh-')) {
+                    isConservative = false; // 明确标注了外文 lang，解除保守模式
+                }
+            }
+        }
+    }
+
+    if (isConservative) {
+        var hasKanaHangul = false;
+        for (const ch of text) {
+            var c = ch.codePointAt(0);
+            if ((c >= 0x3040 && c <= 0x309F) || (c >= 0x30A0 && c <= 0x30FF) ||
+                (c >= 0x31F0 && c <= 0x31FF) || (c >= 0xFF65 && c <= 0xFF9F) ||
+                (c >= 0xAC00 && c <= 0xD7AF) || (c >= 0x1100 && c <= 0x11FF) ||
+                (c >= 0x3130 && c <= 0x318F)) {
+                hasKanaHangul = true; break;
+            }
+        }
+        // 如果没有日韩文，且是非常短或无空格的文本，直接视为中文跳过
+        if (!hasKanaHangul) {
+            if (text.length < 20 || !/\s/.test(text)) {
+                return true; 
+            }
+        }
+    }
+
     var foreignRun = 0, maxForeignRun = 0;
     var anyForeign = false, anyCjk = false;
 
@@ -120,7 +158,7 @@ function isAlreadyChinese(text) {
 }
 
 // ── 页面语言缓存（供 isAlreadyChinese 节点级判断使用） ──
-var _pageLangForeign = false; // true = 页面 lang 为非中文 CJK 语言(如 ja)
+// （变量已在文件顶部声明）
 
 // ── 页面级简体中文检测 ──
 // 采样页面可见文本，判断是否已是简体中文（无需翻译）

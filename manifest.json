@@ -56,8 +56,7 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "icons/*",
-        "pretranslate-hook.js"
+        "icons/*"
       ],
       "matches": [
         "<all_urls>"

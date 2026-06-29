@@ -150,7 +150,7 @@ function processTextNode(node) {
     return;
   }
 
-  if (isAlreadyChinese(text)) { diag.alreadyChinese++; return; }
+  if (isAlreadyChinese(text, node)) { diag.alreadyChinese++; return; }
 
   // Node was previously translated but content has changed externally
   // (e.g. "show more" expanded the textContent of the same node).
@@ -201,6 +201,9 @@ function dispatchIncremental() {
 }
 
 function scanInitial(skipHydration) {
+  if (tMode === 'auto') {
+    _pageLangZH = typeof isPageSimplifiedChinese === 'function' ? isPageSimplifiedChinese() : false;
+  }
   if (tMode === 'off') return;
 
   var hasHydration = skipHydration ? false : (
@@ -560,18 +563,36 @@ function _flushWrites() {
   _rafScheduled = false;
   if (_pendingWrites.length === 0) return;
   _muteDepth++;
+  
+  const start = performance.now();
+  let i = 0;
+  
   try {
-    for (var i = 0; i < _pendingWrites.length; i++) {
+    for (; i < _pendingWrites.length; i++) {
       var w = _pendingWrites[i];
       if (w.isAttr) {
         w.node.__el.setAttribute(w.node.__attr, w.text);
       } else {
         w.node.textContent = w.text;
       }
+      
+      // 每处理 50 个节点检查一次耗时，如果超过 8ms，则打断循环，将控制权还给浏览器渲染线程
+      if (i % 50 === 0 && performance.now() - start > 8) {
+        i++; // 确保下次从下一个节点开始
+        break;
+      }
     }
   } finally {
     _muteDepth--;
-    _pendingWrites.length = 0;
+    if (i < _pendingWrites.length) {
+      // 还有未写完的节点，保留剩余任务，在下一帧继续写
+      _pendingWrites = _pendingWrites.slice(i);
+      _rafScheduled = true;
+      requestAnimationFrame(_flushWrites);
+    } else {
+      // 全部写完
+      _pendingWrites.length = 0;
+    }
   }
 }
 
@@ -924,7 +945,7 @@ chrome.runtime.onMessage.addListener((msg, _s, send) => {
   if (msg.action === 'translate_page') {
     (async () => {
       try {
-        if (isPageSimplifiedChinese()) { LOG_STATE('手动翻译：页面为简体中文，跳过'); send({ success: true, count: 0, reason: 'already_chinese' }); return; }
+        // if (isPageSimplifiedChinese()) { LOG_STATE('手动翻译：页面为简体中文，跳过'); send({ success: true, count: 0, reason: 'already_chinese' }); return; }
         var result = await Promise.race([translatePage('manual'), new Promise(r => setTimeout(() => r({ success: false, reason: 'timeout' }), 30000))]);
         if (result?.skipped) { send({ success: false, reason: 'busy' }); return; }
         if (result?.error) { send({ success: false, reason: result.error }); return; }
@@ -1035,7 +1056,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
     } else if (wasExcluded && !isExcluded && tMode === 'off') {
       chrome.storage.sync.get(['autoTranslate'], function (r) {
         if (r.autoTranslate !== false) {
-          if (typeof isPageSimplifiedChinese === 'function' && isPageSimplifiedChinese()) return;
+          // if (typeof isPageSimplifiedChinese === 'function' && isPageSimplifiedChinese()) return;
           translatePage('auto').catch(function (e) { ERR('exclusion removal re-enable fails:', e?.message); });
         }
       });
@@ -1050,7 +1071,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   } else if (changes.autoTranslate.newValue === true && tMode === 'off') {
     var host = window.location.hostname || '';
     if (_isDomainExcluded(host)) return;
-    if (typeof isPageSimplifiedChinese === 'function' && isPageSimplifiedChinese()) return;
+    // if (typeof isPageSimplifiedChinese === 'function' && isPageSimplifiedChinese()) return;
     translatePage('auto').catch(e => ERR('autoTranslate re-enable fails:', e?.message));
   }
 });
@@ -1323,10 +1344,10 @@ function onSpaNavigate() {
       LOG_STATE('SPA：域名已排除，跳过', newDomain);
       return;
     }
-    if (typeof isPageSimplifiedChinese === 'function' && isPageSimplifiedChinese()) {
-      LOG_STATE('SPA：页面为简体中文，跳过翻译');
-      return;
-    }
+    // if (typeof isPageSimplifiedChinese === 'function' && isPageSimplifiedChinese()) {
+    //   LOG_STATE('SPA：页面为简体中文，跳过翻译');
+    //   return;
+    // }
     translatePage('auto', true).catch(e => ERR('SPA translatePage fails:', e?.message));
   }
 }
@@ -1386,10 +1407,10 @@ window.addEventListener('hashchange', handleSpaUrlChange);
     return;
   }
 
-  if (isPageSimplifiedChinese()) {
-    LOG_STATE('页面为简体中文，跳过翻译');
-    return;
-  }
+  // if (isPageSimplifiedChinese()) {
+  //   LOG_STATE('页面为简体中文，跳过翻译');
+  //   return;
+  // }
 
   LOG('autoTranslate 设置:', settings.autoTranslate);
 
