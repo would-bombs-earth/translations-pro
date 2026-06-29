@@ -222,8 +222,8 @@ translations_pro/
 | `setupSelectionTranslate()` | content.js | mouseup 监听、选词检测、消息发送、排除域名检查 |
 | `showSelPopup()` | content.js | 深色弹窗创建/更新（浮动 ✕ 按钮、入场动画、词性彩色标签），支持原地刷新避免闪烁 |
 | `closeSelPopup()` | content.js | 关闭弹窗并清理事件监听 |
-| `lookupWord()` | background-api.js | Google 词典查询（`dt=t&dt=bd`），返回翻译 + 词性标注数组 |
-| `quickTranslate()` | background-api.js | 轻量 谷歌翻译，绕过全量流水线，含 429 重试 |
+| `lookupWord()` | background-api.js | 有道词典查询 + Google 翻译兜底，返回翻译 + 词性标注数组（含 POS 缩写→中文映射） |
+| `quickTranslate()` | background-api.js | 轻量 Google 翻译，绕过全量流水线用于划词，含 429 重试 |
 
 ---
 
