@@ -229,6 +229,11 @@ translations_pro/
 
 ## 更新日志
 
+### v1.2.1
+
+- **Bug 修复**：修复了无头预翻译中消息发送类型不匹配导致控制台报出 `Unchecked runtime.lastError` 错误的问题。
+- **稳定性**：在 `background.js` 增加消息处理的全局兜底，避免未知消息卡死端口导致异常。
+
 ### v1.2.0
 
 - **无头预翻译 (Headless Pre-translation)**：在 `MAIN` 世界拦截 `Fetch/XHR`，提前提取 JSON 中的潜在文本并异步送翻，实现 SPA 动态渲染时的 0 延迟同步命中缓存体验。

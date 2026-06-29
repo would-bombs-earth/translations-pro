@@ -361,4 +361,8 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     return true;
   }
 
+  // 兜底处理：未知消息类型
+  safeSend({ error: 'Unknown message type: ' + req.type });
+  return false;
+
 });

@@ -1400,9 +1400,9 @@ function flushPrefetch() {
 
   batches.forEach(b => {
     chrome.runtime.sendMessage({
-      action: 'translate',
+      type: 'translate',
       domain: location.hostname,
-      payload: b.map(x => x.payload).join('\n')
+      text: b.map(x => x.payload).join('\n')
     }, response => {
       if (response && response.translation) {
         const resMap = parseTranslated(response.translation);
