@@ -1528,6 +1528,11 @@ function flushPrefetch() {
     return;
   }
 
+  _onMuteReleased = function () {
+    if (document.body) enqueueNode(document.body);
+    scheduleFlush();
+  };
+
   translatePage('auto').catch(e => ERR('init translatePage fails:', e?.message));
   LOG('初始化完成');
 
