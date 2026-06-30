@@ -156,6 +156,13 @@ function processTextNode(node) {
 
   if (isAlreadyChinese(text, node)) { diag.alreadyChinese++; return; }
 
+  if (text.includes("Director of National Intelligence") || text.includes("USG/DoD")) {
+    console.log("[GT Debug] Found Tulsi bio:", text, "Length:", len);
+    console.log("[GT Debug] isAlreadyChinese:", isAlreadyChinese(text, node));
+    console.log("[GT Debug] SKIP_RE:", SKIP_RE.test(text), "SKIP_COMBINED_RE:", SKIP_COMBINED_RE.test(text));
+    console.log("[GT Debug] node parent classes:", node.parentElement ? node.parentElement.className : "null");
+  }
+
   // Node was previously translated but content has changed externally
   // (e.g. "show more" expanded the textContent of the same node).
   // Re-process it; applyTranslation will update origTextMap with the new raw.
@@ -228,7 +235,7 @@ function scanInitial() {
   };
 
   if (typeof requestIdleCallback === 'function') {
-    requestIdleCallback(doScan, { timeout: 200 });
+    requestIdleCallback(doScan, { timeout: 50 });
   } else {
     setTimeout(doScan, 0);
   }
@@ -303,6 +310,15 @@ let flushTimer = null;
 function scheduleFlush() {
   if (tMode === 'off') return;
   if (translating || flushTimer || !isAlive()) return;
+  
+  if (window.__gt_api_error_pause && Date.now() < window.__gt_api_error_pause) {
+    flushTimer = setTimeout(() => {
+      flushTimer = null;
+      if (isAlive() && tMode !== 'off') flushQueue();
+    }, window.__gt_api_error_pause - Date.now());
+    return;
+  }
+
   if (tMode === 'manual') { flushQueue(); return; }
   flushTimer = setTimeout(() => {
     flushTimer = null;
@@ -491,7 +507,7 @@ async function translateBatch(batch) {
   } else if (batch.length === 1) {
     sl = detectSourceLang(batch[0].raw);
   } else {
-    sl = 'auto';
+    sl = detectSourceLang(text);
   }
 
   // Retry sendMessage up to 3 times (service worker may be waking up)
@@ -525,6 +541,14 @@ async function translateBatch(batch) {
     ERR('翻译失败:', result.error, '| sl=', sl, '| text前100字', text.slice(0, 100));
     diag.apiErrors.push(result.error);
     diag.failed += batch.length;
+    
+    // Add nodes back to queue so they get retried
+    batch.forEach(item => {
+      if (item.node && item.node.isConnected) queue.add(item.node);
+    });
+    // Add a pause to prevent tight loops on persistent errors
+    window.__gt_api_error_pause = Date.now() + 3000;
+    
     return;
   }
 
@@ -1432,7 +1456,7 @@ window.addEventListener('gt-prefetch-text', (e) => {
     prefetchTimer = setTimeout(() => {
       prefetchTimer = null;
       flushPrefetch();
-    }, 100);
+    }, 50);
   }
 });
 
@@ -1527,6 +1551,17 @@ function flushPrefetch() {
     LOG_STATE('自动翻译已关闭，跳过');
     return;
   }
+
+  // Patch cacheSet to bridge translations to MAIN world for pre-render injection
+  var _origCacheSet = cacheSet;
+  cacheSet = function (key, value) {
+    _origCacheSet(key, value);
+    try {
+      if (typeof key === 'string' && typeof value === 'string' && value !== key) {
+        window.dispatchEvent(new CustomEvent('gt-cache-translation', { detail: { raw: key, translated: value } }));
+      }
+    } catch (e) {}
+  };
 
   _onMuteReleased = function () {
     if (document.body) enqueueNode(document.body);

@@ -7,6 +7,22 @@
   const origTextMap = new WeakMap();
   const origAttrMap = new WeakMap();
 
+  // ── Translation Cache for Pre-render Injection ──
+  var translationCache = new Map();
+  var TC_MAX = 5000;
+  var TC_CLEAN = 1250;
+
+  window.addEventListener('gt-cache-translation', function (e) {
+    var detail = e.detail;
+    if (detail && typeof detail.raw === 'string' && typeof detail.translated === 'string' && detail.translated !== detail.raw) {
+      translationCache.set(detail.raw, detail.translated);
+      if (translationCache.size > TC_MAX) {
+        var iter = translationCache.keys();
+        for (var i = 0; i < TC_CLEAN; i++) translationCache.delete(iter.next().value);
+      }
+    }
+  }, true);
+
   window.addEventListener('gt-orig-text', (e) => {
     e.stopPropagation();
     const node = e.target;
@@ -41,7 +57,13 @@
         return origDescriptor.get ? origDescriptor.get.call(this) : origDescriptor.value;
       },
       set(val) {
-        origTextMap.delete(this);
+        var nVal = typeof val === 'string' ? val.replace(/\s+/g, ' ').trim() : val;
+        if (typeof nVal === 'string' && translationCache.has(nVal)) {
+          origTextMap.set(this, val);
+          val = translationCache.get(nVal);
+        } else {
+          origTextMap.delete(this);
+        }
         if (origDescriptor.set) {
           origDescriptor.set.call(this, val);
         } else {

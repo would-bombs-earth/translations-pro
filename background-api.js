@@ -633,7 +633,8 @@ async function translateViaEngine(text, sl, engine) {
         gsingle = gsingle.replace(/⟪\s*(\d+)\s*⟫/g, '⟪$1⟫');
 
         if (gsingle && !/[一-鿿]/.test(gsingle) && text && /[a-zA-Z]{3,}/.test(text)) {
-            gsingle = text;
+            // Google failed to translate (returned original text)
+            throw new Error('Google batchexecute returned no Chinese characters (Neural MT fallback issue)');
         }
         return { translation: gsingle, engine: 'google' };
     }
