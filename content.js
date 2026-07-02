@@ -1324,6 +1324,11 @@ function setupSelectionTranslate() {
   document.addEventListener('mouseup', function (e) {
     if (_selPopup && _selPopup.contains(e.target)) return;
     if (tMode !== 'off') return;
+    var host = window.location.hostname || '';
+    if (!_isDomainExcluded(host)) return;
+    if (typeof isPageSimplifiedChinese === 'function') {
+      try { if (isPageSimplifiedChinese()) return; } catch (_) {}
+    }
     var sel = window.getSelection();
     if (!sel || sel.isCollapsed) return;
     var text = sel.toString().trim();
