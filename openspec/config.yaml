@@ -1,0 +1,23 @@
+schema: spec-driven
+
+context: |
+  Tech stack:
+    - Chrome Extension Manifest V3 (Service Worker + Content Scripts)
+    - Vanilla JavaScript (no framework)
+    - MV3 with ES Modules (background.js imports background-api.js and kv-sync.js)
+
+  Key conventions:
+    - Content scripts split across ISOLATED world (content.js) and MAIN world (dom-hijack.js)
+    - Double-engine translation (Google batchexecute + Microsoft Cognitive Services)
+    - CF KV sync for cross-device excluded domain list
+    - LRU cache (memory L1 + IndexedDB L2) for translations
+
+  Domain: Browser-based webpage translation extension
+  Target: zh-CN (Simplified Chinese) readers browsing foreign language pages
+
+rules:
+  proposal:
+    - State which engine layer is affected (background API / content script / options UI / KV sync)
+    - Include migration notes if changing data format in chrome.storage or KV
+  tasks:
+    - Break into steps that can be verified independently (e.g. "add test for X")
